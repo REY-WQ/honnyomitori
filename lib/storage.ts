@@ -57,6 +57,11 @@ export async function deleteBook(id: string): Promise<void> {
   await supabase.from("books").delete().eq("id", id);
 }
 
+export async function renameBook(id: string, title: string): Promise<void> {
+  const supabase = getSupabase();
+  await supabase.from("books").update({ title }).eq("id", id);
+}
+
 export async function addPage(bookId: string, page: Page): Promise<void> {
   await addPages(bookId, [page]);
 }
