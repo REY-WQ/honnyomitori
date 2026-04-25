@@ -330,6 +330,21 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
       )
     : book.pages;
 
+  // 章モード時のページグループ
+  const chapterGroups = settings.textMode === "chapter" && !searchQuery
+    ? (() => {
+        const breaks = [1, ...settings.chapterBreaks].sort((a, b) => a - b);
+        return breaks.map((startPage, i) => {
+          const nextBreak = breaks[i + 1] ?? Infinity;
+          return {
+            chapterNum: i + 1,
+            startPage,
+            pages: book.pages.filter((p) => p.pageNumber >= startPage && p.pageNumber < nextBreak),
+          };
+        }).filter((g) => g.pages.length > 0);
+      })()
+    : null;
+
   const fullText = buildFullText(book.pages, settings);
 
   // --------- 右パネルコンテンツ ---------
@@ -385,7 +400,7 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
         {/* ページナビゲーション */}
         <div className="flex items-center justify-between mb-2 text-xs text-gray-400">
           <button
-            onClick={() => { if (prevPage) { setSelectedPageId(prevPage.id); setEditingText(null); } }}
+            onClick={() => { if (prevPage) { setSelectedPageId(prevPage.id); setEditingText(null); document.getElementById(`page-${prevPage.id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" }); } }}
             disabled={!prevPage}
             className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-gray-100 disabled:opacity-30 active:scale-95 transition-transform"
           >
@@ -393,7 +408,7 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
           </button>
           <span className="text-gray-400">{currentIdx + 1} / {pages.length}</span>
           <button
-            onClick={() => { if (nextPage) { setSelectedPageId(nextPage.id); setEditingText(null); } }}
+            onClick={() => { if (nextPage) { setSelectedPageId(nextPage.id); setEditingText(null); document.getElementById(`page-${nextPage.id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" }); } }}
             disabled={!nextPage}
             className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-gray-100 disabled:opacity-30 active:scale-95 transition-transform"
           >
@@ -481,6 +496,69 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
               >
                 {copiedId === selectedPage.id ? "コピー済み ✓" : "コピー"}
               </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderPageCard(page: Page) {
+    const isSelected = selectedPageId === page.id;
+    return (
+      <div key={page.id} id={`page-${page.id}`} className={`bg-white rounded-2xl shadow overflow-hidden transition-all ${isSelected ? "ring-2 ring-blue-400" : ""}`}>
+        <div className="px-4 py-3 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={() => { setSelectedPageId(isSelected ? null : page.id); setShowFullText(false); setEditingText(null); }}
+            className="flex-1 text-left min-w-0 active:opacity-70 transition-opacity"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-700 shrink-0">ページ {page.pageNumber}</span>
+              {page.status === "processing" && <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full animate-pulse shrink-0">処理中</span>}
+              {page.status === "done" && <>
+                <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full shrink-0">完了</span>
+                <span className="text-xs text-gray-400 shrink-0">{page.text.length.toLocaleString()}文字</span>
+              </>}
+              {page.status === "error" && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full shrink-0">エラー</span>}
+            </div>
+            {page.status === "done" && !isSelected && page.text && (
+              <p className="text-xs text-gray-400 mt-0.5 truncate">{page.text.replace(/\n/g, " ").slice(0, 60)}</p>
+            )}
+          </button>
+          <div className="flex items-center gap-1.5 shrink-0 ml-2 md:hidden">
+            {page.status === "error" && (
+              <button onClick={(e) => { e.stopPropagation(); triggerRetry(page); }} className="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full active:scale-95 transition-transform">再試行</button>
+            )}
+            {deletingPageId === page.id ? (
+              <button onClick={(e) => { e.stopPropagation(); handleDeletePage(page.id); }} className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full active:scale-95 transition-transform">確認</button>
+            ) : (
+              <button onClick={(e) => { e.stopPropagation(); handleDeletePage(page.id); }} className="text-gray-300 hover:text-red-400 text-base active:scale-95 transition-transform">🗑️</button>
+            )}
+          </div>
+        </div>
+        {isSelected && (
+          <div className="md:hidden px-4 pb-4" onClick={(e) => e.stopPropagation()}>
+            {page.status === "processing" ? (
+              <p className="text-sm text-gray-400 text-center py-4 animate-pulse">文字認識中...</p>
+            ) : editingText !== null && selectedPageId === page.id ? (
+              <div className="flex flex-col gap-2">
+                <textarea className="w-full h-48 text-sm text-gray-700 font-sans bg-gray-50 rounded-xl p-3 resize-none outline-none focus:ring-2 focus:ring-blue-300" value={editingText} onChange={(e) => setEditingText(e.target.value)} autoFocus />
+                <div className="flex gap-2">
+                  <button onClick={() => saveEdit(page)} disabled={savingEdit} className="flex-1 bg-blue-600 text-white py-2 rounded-xl text-sm font-medium active:scale-95 transition-transform disabled:opacity-50">{savingEdit ? "保存中..." : "保存"}</button>
+                  <button onClick={() => setEditingText(null)} className="flex-1 bg-gray-100 text-gray-600 py-2 rounded-xl text-sm active:scale-95 transition-transform">キャンセル</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <pre className="text-sm text-gray-700 whitespace-pre-wrap font-sans bg-gray-50 rounded-xl p-3 max-h-60 overflow-y-auto">{page.text || "（テキストなし）"}</pre>
+                <div className="flex gap-2 mt-2">
+                  {page.status === "done" && <>
+                    <button onClick={() => copyText(page.text, page.id)} className="flex-1 bg-gray-100 text-gray-600 py-2 rounded-xl text-sm active:scale-95 transition-transform">{copiedId === page.id ? "コピー済み ✓" : "コピー"}</button>
+                    <button onClick={() => startEdit(page)} className="flex-1 bg-blue-100 text-blue-600 py-2 rounded-xl text-sm active:scale-95 transition-transform">✏️ 編集</button>
+                  </>}
+                  {page.status === "error" && <button onClick={() => triggerRetry(page)} className="flex-1 bg-orange-100 text-orange-600 py-2 rounded-xl text-sm active:scale-95 transition-transform">再試行</button>}
+                </div>
+              </>
             )}
           </div>
         )}
@@ -719,116 +797,21 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
               <div className="text-center text-gray-400 mt-4">
                 <p className="text-sm">「{searchQuery}」に一致するページが見つかりません</p>
               </div>
-            ) : (
-              filteredPages.map((page) => {
-                const isSelected = selectedPageId === page.id;
-                return (
-                  <div key={page.id} id={`page-${page.id}`} className={`bg-white rounded-2xl shadow overflow-hidden transition-all ${isSelected ? "ring-2 ring-blue-400" : ""}`}>
-                    <div className="px-4 py-3 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
-                      {/* ページ選択ボタン */}
-                      <button
-                        onClick={() => { setSelectedPageId(isSelected ? null : page.id); setShowFullText(false); setEditingText(null); }}
-                        className="flex-1 text-left min-w-0 active:opacity-70 transition-opacity"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-gray-700 shrink-0">ページ {page.pageNumber}</span>
-                          {page.status === "processing" && (
-                            <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full animate-pulse shrink-0">処理中</span>
-                          )}
-                          {page.status === "done" && (
-                            <>
-                              <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full shrink-0">完了</span>
-                              <span className="text-xs text-gray-400 shrink-0">{page.text.length.toLocaleString()}文字</span>
-                            </>
-                          )}
-                          {page.status === "error" && (
-                            <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full shrink-0">エラー</span>
-                          )}
-                        </div>
-                        {page.status === "done" && !isSelected && page.text && (
-                          <p className="text-xs text-gray-400 mt-0.5 truncate">{page.text.replace(/\n/g, " ").slice(0, 60)}</p>
-                        )}
-                      </button>
-
-                      {/* アクションボタン（モバイルのみ） */}
-                      <div className="flex items-center gap-1.5 shrink-0 ml-2 md:hidden">
-                        {page.status === "error" && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); triggerRetry(page); }}
-                            className="text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full active:scale-95 transition-transform"
-                          >
-                            再試行
-                          </button>
-                        )}
-                        {deletingPageId === page.id ? (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDeletePage(page.id); }}
-                            className="text-xs bg-red-500 text-white px-2 py-0.5 rounded-full active:scale-95 transition-transform"
-                          >
-                            確認
-                          </button>
-                        ) : (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDeletePage(page.id); }}
-                            className="text-gray-300 hover:text-red-400 text-base active:scale-95 transition-transform"
-                          >
-                            🗑️
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* モバイルのみ: 選択されたページのインライン展開 */}
-                    {isSelected && (
-                      <div className="md:hidden px-4 pb-4" onClick={(e) => e.stopPropagation()}>
-                        {page.status === "processing" ? (
-                          <p className="text-sm text-gray-400 text-center py-4 animate-pulse">文字認識中...</p>
-                        ) : editingText !== null && selectedPageId === page.id ? (
-                          <div className="flex flex-col gap-2">
-                            <textarea
-                              className="w-full h-48 text-sm text-gray-700 font-sans bg-gray-50 rounded-xl p-3 resize-none outline-none focus:ring-2 focus:ring-blue-300"
-                              value={editingText}
-                              onChange={(e) => setEditingText(e.target.value)}
-                              autoFocus
-                            />
-                            <div className="flex gap-2">
-                              <button onClick={() => saveEdit(page)} disabled={savingEdit} className="flex-1 bg-blue-600 text-white py-2 rounded-xl text-sm font-medium active:scale-95 transition-transform disabled:opacity-50">
-                                {savingEdit ? "保存中..." : "保存"}
-                              </button>
-                              <button onClick={() => setEditingText(null)} className="flex-1 bg-gray-100 text-gray-600 py-2 rounded-xl text-sm active:scale-95 transition-transform">キャンセル</button>
-                            </div>
-                          </div>
-                        ) : (
-                          <>
-                            <pre className="text-sm text-gray-700 whitespace-pre-wrap font-sans bg-gray-50 rounded-xl p-3 max-h-60 overflow-y-auto">
-                              {page.text || "（テキストなし）"}
-                            </pre>
-                            <div className="flex gap-2 mt-2">
-                              {page.status === "done" && (
-                                <>
-                                  <button onClick={() => copyText(page.text, page.id)} className="flex-1 bg-gray-100 text-gray-600 py-2 rounded-xl text-sm active:scale-95 transition-transform">
-                                    {copiedId === page.id ? "コピー済み ✓" : "コピー"}
-                                  </button>
-                                  <button onClick={() => startEdit(page)} className="flex-1 bg-blue-100 text-blue-600 py-2 rounded-xl text-sm active:scale-95 transition-transform">
-                                    ✏️ 編集
-                                  </button>
-                                </>
-                              )}
-                              {page.status === "error" && (
-                                <button onClick={() => triggerRetry(page)} className="flex-1 bg-orange-100 text-orange-600 py-2 rounded-xl text-sm active:scale-95 transition-transform">再試行</button>
-                              )}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )}
+            ) : chapterGroups ? (
+              chapterGroups.map((group) => (
+                <div key={group.chapterNum} className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2 px-1">
+                    <span className="text-xs font-semibold text-blue-600">第{group.chapterNum}章</span>
+                    <span className="text-xs text-gray-300">p.{group.startPage}〜 / {group.pages.length}ページ</span>
                   </div>
-                );
-              })
+                  {group.pages.map((page) => renderPageCard(page))}
+                </div>
+              ))
+            ) : (
+              filteredPages.map((page) => renderPageCard(page))
             )}
           </div>
         </div>
-
         {/* 右パネル（デスクトップのみ） */}
         <div className="hidden md:flex flex-col flex-1 p-4 overflow-y-auto">
           <RightPanel />
