@@ -88,7 +88,7 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-gray-50 p-4 max-w-lg mx-auto" onClick={() => { setDeletingId(null); }}>
+    <main className="min-h-screen bg-gray-50 p-4 max-w-4xl mx-auto" onClick={() => { setDeletingId(null); }}>
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-800">📚 本棚</h1>
         <button
@@ -154,7 +154,7 @@ export default function Home() {
           <p className="text-sm">「新しい本」から追加してください</p>
         </div>
       ) : (
-        <div className="flex flex-col gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {books.map((book) => {
             const done = book.pages.filter((p) => p.status === "done");
             const processing = book.pages.filter((p) => p.status === "processing").length;

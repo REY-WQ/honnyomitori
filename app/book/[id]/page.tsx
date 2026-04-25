@@ -34,6 +34,7 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
   const [editingText, setEditingText] = useState<string | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [fullTextSeparated, setFullTextSeparated] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const retryFileInputRef = useRef<HTMLInputElement>(null);
   const retryPageRef = useRef<Page | null>(null);
@@ -227,6 +228,13 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
   const finishedCount = book.pages.length - processingPages.length;
   const progressPct = book.pages.length > 0 ? Math.round((finishedCount / book.pages.length) * 100) : 0;
   const selectedPage = book.pages.find((p) => p.id === selectedPageId) ?? null;
+
+  const filteredPages = searchQuery.trim()
+    ? book.pages.filter((p) =>
+        p.text.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        String(p.pageNumber).includes(searchQuery)
+      )
+    : book.pages;
 
   const fullTextPlain = book.pages
     .slice().sort((a, b) => a.pageNumber - b.pageNumber)
@@ -466,13 +474,34 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
               </div>
             )}
 
+            {/* 検索バー */}
+            {book.pages.length > 3 && (
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300 text-sm">🔍</span>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="ページ内を検索..."
+                  className="w-full bg-white border border-gray-200 rounded-xl pl-8 pr-3 py-2 text-sm outline-none focus:border-blue-400"
+                />
+                {searchQuery && (
+                  <button onClick={() => setSearchQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs">✕</button>
+                )}
+              </div>
+            )}
+
             {/* ページ一覧 */}
             {book.pages.length === 0 ? (
               <div className="text-center text-gray-400 mt-8">
                 <p className="text-sm">まだページがありません</p>
               </div>
+            ) : filteredPages.length === 0 ? (
+              <div className="text-center text-gray-400 mt-4">
+                <p className="text-sm">「{searchQuery}」に一致するページが見つかりません</p>
+              </div>
             ) : (
-              book.pages.map((page) => {
+              filteredPages.map((page) => {
                 const isSelected = selectedPageId === page.id;
                 return (
                   <div key={page.id} className={`bg-white rounded-2xl shadow overflow-hidden transition-all ${isSelected ? "ring-2 ring-blue-400" : ""}`}>
