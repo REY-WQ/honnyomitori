@@ -1,7 +1,8 @@
-import { supabase } from "./supabase";
+import { getSupabase } from "./supabase";
 import { Book, Page } from "./types";
 
 export async function getBooks(): Promise<Book[]> {
+  const supabase = getSupabase();
   const { data: books } = await supabase.from("books").select("*").order("created_at", { ascending: false });
   if (!books) return [];
 
@@ -27,6 +28,7 @@ export async function getBooks(): Promise<Book[]> {
 }
 
 export async function getBook(id: string): Promise<Book | null> {
+  const supabase = getSupabase();
   const { data: b } = await supabase.from("books").select("*").eq("id", id).single();
   if (!b) return null;
 
@@ -46,14 +48,17 @@ export async function getBook(id: string): Promise<Book | null> {
 }
 
 export async function addBook(book: Book): Promise<void> {
+  const supabase = getSupabase();
   await supabase.from("books").insert({ id: book.id, title: book.title, created_at: book.createdAt });
 }
 
 export async function deleteBook(id: string): Promise<void> {
+  const supabase = getSupabase();
   await supabase.from("books").delete().eq("id", id);
 }
 
 export async function addPage(bookId: string, page: Page): Promise<void> {
+  const supabase = getSupabase();
   await supabase.from("pages").insert({
     id: page.id,
     book_id: bookId,
@@ -65,6 +70,7 @@ export async function addPage(bookId: string, page: Page): Promise<void> {
 }
 
 export async function updatePage(page: Page): Promise<void> {
+  const supabase = getSupabase();
   await supabase.from("pages").update({
     text: page.text,
     processed_at: page.processedAt || null,
