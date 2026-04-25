@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 import { Book, Page } from "@/lib/types";
 import { getBook, addPages, updatePage, deletePage } from "@/lib/storage";
+import { getSupabase } from "@/lib/supabase";
 import { compressImage } from "@/lib/compress";
 
 const PARALLEL = 3;
@@ -26,13 +27,32 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
   const bookIdRef = useRef<string>("");
 
   useEffect(() => {
+    let cleanup: (() => void) | undefined;
+
     (async () => {
       const { id } = await props.params;
       bookIdRef.current = id;
       const b = await getBook(id);
       if (!b) { router.push("/"); return; }
       setBook(b);
+
+      const supabase = getSupabase();
+      const channel = supabase
+        .channel(`pages-${id}`)
+        .on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: "pages",
+          filter: `book_id=eq.${id}`,
+        }, () => {
+          reload();
+        })
+        .subscribe();
+
+      cleanup = () => { supabase.removeChannel(channel); };
     })();
+
+    return () => { cleanup?.(); };
   }, [props.params, router]);
 
   async function reload() {
@@ -109,10 +129,10 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
     if (!files || !files[0] || !page) return;
     retryPageRef.current = null;
     if (retryFileInputRef.current) retryFileInputRef.current.value = "";
-    const processing: Page = { ...page, status: "processing", text: "" };
-    await updatePage(processing);
+    const retrying: Page = { ...page, status: "processing", text: "" };
+    await updatePage(retrying);
     await reload();
-    await processOne(files[0], processing);
+    await processOne(files[0], retrying);
     await reload();
   }
 
@@ -152,8 +172,11 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
   if (!book) return <div className="p-6 text-gray-400 text-center">読み込み中...</div>;
 
   const donePages = book.pages.filter((p) => p.status === "done");
+  const processingPages = book.pages.filter((p) => p.status === "processing");
   const errorCount = book.pages.filter((p) => p.status === "error").length;
   const totalChars = donePages.reduce((s, p) => s + p.text.length, 0);
+  const finishedCount = book.pages.length - processingPages.length;
+  const progressPct = book.pages.length > 0 ? Math.round((finishedCount / book.pages.length) * 100) : 0;
   const fullText = book.pages
     .slice()
     .sort((a, b) => a.pageNumber - b.pageNumber)
@@ -170,9 +193,18 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
           <p className="text-xs text-gray-400 flex flex-wrap gap-x-1">
             <span>{donePages.length} / {book.pages.length} ページ完了</span>
             {totalChars > 0 && <span>・{totalChars.toLocaleString()}文字</span>}
-            {errorCount > 0 && <span className="text-red-400">{errorCount}件エラー</span>}
-            {processing && <span className="text-blue-500">処理中…残り{queueCount}枚</span>}
+            {errorCount > 0 && <span className="text-red-400">・{errorCount}件エラー</span>}
+            {processing && <span className="text-blue-500">・処理中…残り{queueCount}枚</span>}
           </p>
+          {/* プログレスバー */}
+          {processingPages.length > 0 && (
+            <div className="mt-1.5 w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+              <div
+                className="bg-blue-500 h-full rounded-full transition-all duration-500"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+          )}
         </div>
         {(donePages.length > 0 || errorCount > 0) && (
           <button
