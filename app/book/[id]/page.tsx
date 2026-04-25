@@ -42,6 +42,7 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
   const isRunningRef = useRef(false);
   const bookIdRef = useRef<string>("");
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+  const hasAutoSelectedRef = useRef(false);
 
   async function acquireWakeLock() {
     try {
@@ -64,6 +65,12 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
       if (stuck.length > 0) setStuckCount(stuck.length);
       setBook(b);
 
+      // デスクトップで初回ロード時に最初のページを自動選択
+      if (!hasAutoSelectedRef.current && b.pages.length > 0 && typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches) {
+        hasAutoSelectedRef.current = true;
+        setSelectedPageId(b.pages[0].id);
+      }
+
       const supabase = getSupabase();
       const channel = supabase
         .channel(`pages-${id}`)
@@ -80,6 +87,35 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
     const b = await getBook(bookIdRef.current);
     if (b) setBook({ ...b });
   }
+
+  // キーボードナビゲーション（矢印キーでページ移動）
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (editingText !== null) return;
+      if (!book || book.pages.length === 0) return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+      const pages = book.pages;
+      const idx = selectedPageId ? pages.findIndex((p) => p.id === selectedPageId) : -1;
+
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = pages[idx + 1] ?? pages[0];
+        setSelectedPageId(next.id);
+        setShowFullText(false);
+        document.getElementById(`page-${next.id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const prev = pages[idx - 1] ?? pages[pages.length - 1];
+        setSelectedPageId(prev.id);
+        setShowFullText(false);
+        document.getElementById(`page-${prev.id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedPageId, editingText, book]);
 
   async function processOne(file: File, pageEntry: Page) {
     const controller = new AbortController();
@@ -295,13 +331,37 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
         <div className="flex flex-col items-center justify-center h-full text-gray-300">
           <p className="text-5xl mb-4">📄</p>
           <p className="text-sm">左のページを選んでください</p>
+          <p className="text-xs mt-1">矢印キー ← → でもナビゲートできます</p>
         </div>
       );
     }
 
+    const pages = book!.pages;
+    const currentIdx = pages.findIndex((p) => p.id === selectedPage.id);
+    const prevPage = pages[currentIdx - 1] ?? null;
+    const nextPage = pages[currentIdx + 1] ?? null;
+
     const isEditing = editingText !== null;
     return (
       <div className="flex flex-col h-full">
+        {/* ページナビゲーション */}
+        <div className="flex items-center justify-between mb-2 text-xs text-gray-400">
+          <button
+            onClick={() => { if (prevPage) { setSelectedPageId(prevPage.id); setEditingText(null); } }}
+            disabled={!prevPage}
+            className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-gray-100 disabled:opacity-30 active:scale-95 transition-transform"
+          >
+            ← {prevPage ? `ページ${prevPage.pageNumber}` : ""}
+          </button>
+          <span className="text-gray-400">{currentIdx + 1} / {pages.length}</span>
+          <button
+            onClick={() => { if (nextPage) { setSelectedPageId(nextPage.id); setEditingText(null); } }}
+            disabled={!nextPage}
+            className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-gray-100 disabled:opacity-30 active:scale-95 transition-transform"
+          >
+            {nextPage ? `ページ${nextPage.pageNumber}` : ""} →
+          </button>
+        </div>
         <div className="flex items-center justify-between mb-3">
           <div>
             <p className="text-sm font-semibold text-gray-700">ページ {selectedPage.pageNumber}</p>
@@ -504,7 +564,7 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
               filteredPages.map((page) => {
                 const isSelected = selectedPageId === page.id;
                 return (
-                  <div key={page.id} className={`bg-white rounded-2xl shadow overflow-hidden transition-all ${isSelected ? "ring-2 ring-blue-400" : ""}`}>
+                  <div key={page.id} id={`page-${page.id}`} className={`bg-white rounded-2xl shadow overflow-hidden transition-all ${isSelected ? "ring-2 ring-blue-400" : ""}`}>
                     <div className="px-4 py-3 flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
                       {/* ページ選択ボタン */}
                       <button
