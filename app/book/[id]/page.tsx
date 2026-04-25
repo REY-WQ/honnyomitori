@@ -13,13 +13,40 @@ const OCR_TIMEOUT_MS = 30000;
 
 // 設定の型定義（将来の設定追加に対応できるよう拡張性を持たせる）
 interface BookSettings {
-  textMode: "continuous" | "paginated"; // テキスト結合モード
+  textMode: "continuous" | "paginated" | "chapter"; // テキスト結合モード
+  chapterBreaks: number[]; // 章の開始ページ番号一覧（1は常に第1章開始）
   // 将来追加できる設定例:
   // ocrLanguage: "ja" | "en" | "auto";
   // autoExpand: boolean;
 }
 
-const DEFAULT_SETTINGS: BookSettings = { textMode: "continuous" };
+const DEFAULT_SETTINGS: BookSettings = { textMode: "continuous", chapterBreaks: [] };
+
+function buildFullText(pages: Page[], settings: BookSettings): string {
+  const sorted = pages.slice().sort((a, b) => a.pageNumber - b.pageNumber)
+    .filter((p) => p.status === "done" || p.status === "error");
+
+  const toText = (p: Page) => p.status === "error" ? `【ページ${p.pageNumber}：取得失敗】` : p.text;
+
+  if (settings.textMode === "paginated") {
+    return sorted.map((p) => p.status === "error"
+      ? `── ページ ${p.pageNumber} ──\n【取得失敗】`
+      : `── ページ ${p.pageNumber} ──\n${p.text}`
+    ).join("\n\n");
+  }
+
+  if (settings.textMode === "chapter") {
+    const breaks = [1, ...settings.chapterBreaks].sort((a, b) => a - b);
+    return breaks.map((startPage, i) => {
+      const nextBreak = breaks[i + 1] ?? Infinity;
+      const chPages = sorted.filter((p) => p.pageNumber >= startPage && p.pageNumber < nextBreak);
+      if (chPages.length === 0) return null;
+      return `━━━━━ 第${i + 1}章（p.${startPage}〜）━━━━━\n\n${chPages.map(toText).join("\n\n")}`;
+    }).filter(Boolean).join("\n\n\n");
+  }
+
+  return sorted.map(toText).join("\n\n");
+}
 
 function loadSettings(bookId: string): BookSettings {
   try {
@@ -303,17 +330,7 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
       )
     : book.pages;
 
-  const sortedFinished = book.pages
-    .slice().sort((a, b) => a.pageNumber - b.pageNumber)
-    .filter((p) => p.status === "done" || p.status === "error");
-
-  const fullText = settings.textMode === "paginated"
-    ? sortedFinished
-        .map((p) => p.status === "error" ? `── ページ ${p.pageNumber} ──\n【取得失敗】` : `── ページ ${p.pageNumber} ──\n${p.text}`)
-        .join("\n\n")
-    : sortedFinished
-        .map((p) => p.status === "error" ? `【ページ${p.pageNumber}：取得失敗】` : p.text)
-        .join("\n\n");
+  const fullText = buildFullText(book.pages, settings);
 
   // --------- 右パネルコンテンツ ---------
   function RightPanel() {
@@ -533,27 +550,58 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
                 {([
                   { value: "continuous", label: "連続（区切りなし）", desc: "全ページのテキストをそのまま繋げる" },
                   { value: "paginated", label: "ページ区切りあり", desc: "各ページにページ番号のヘッダーを付ける" },
+                  { value: "chapter", label: "章モード", desc: "ページ番号で章の区切りを指定する" },
                 ] as const).map((opt) => (
-                  <button
-                    key={opt.value}
-                    onClick={() => updateSettings({ textMode: opt.value })}
-                    className={`flex items-start gap-3 p-3 rounded-xl border-2 text-left transition-colors active:scale-98 ${settings.textMode === opt.value ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-200"}`}
-                  >
-                    <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 ${settings.textMode === opt.value ? "border-blue-500 bg-blue-500" : "border-gray-300"}`} />
-                    <div>
-                      <p className="text-sm font-medium text-gray-700">{opt.label}</p>
-                      <p className="text-xs text-gray-400 mt-0.5">{opt.desc}</p>
-                    </div>
-                  </button>
-                ))}
-                {/* 将来の章モード（準備中） */}
-                <div className="flex items-start gap-3 p-3 rounded-xl border-2 border-gray-100 opacity-40">
-                  <span className="mt-0.5 w-4 h-4 rounded-full border-2 border-gray-300 shrink-0" />
-                  <div>
-                    <p className="text-sm font-medium text-gray-700">章モード <span className="text-xs text-orange-400 ml-1">準備中</span></p>
-                    <p className="text-xs text-gray-400 mt-0.5">ページを章ごとにまとめて表示する</p>
+                  <div key={opt.value}>
+                    <button
+                      onClick={() => updateSettings({ textMode: opt.value })}
+                      className={`w-full flex items-start gap-3 p-3 rounded-xl border-2 text-left transition-colors active:scale-98 ${settings.textMode === opt.value ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-200"}`}
+                    >
+                      <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 ${settings.textMode === opt.value ? "border-blue-500 bg-blue-500" : "border-gray-300"}`} />
+                      <div>
+                        <p className="text-sm font-medium text-gray-700">{opt.label}</p>
+                        <p className="text-xs text-gray-400 mt-0.5">{opt.desc}</p>
+                      </div>
+                    </button>
+
+                    {/* 章モードの章区切り設定 */}
+                    {opt.value === "chapter" && settings.textMode === "chapter" && (
+                      <div className="ml-7 mt-2 mb-1">
+                        <p className="text-xs text-gray-500 mb-2">章の開始ページ番号を追加（Enterで確定）：</p>
+                        <input
+                          type="number"
+                          min={2}
+                          placeholder="例：15（ページ15から第2章）"
+                          className="w-full border border-gray-200 rounded-xl px-3 py-1.5 text-sm outline-none focus:border-blue-400 mb-2"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              const val = parseInt((e.target as HTMLInputElement).value);
+                              if (val > 1 && !settings.chapterBreaks.includes(val)) {
+                                updateSettings({ chapterBreaks: [...settings.chapterBreaks, val].sort((a, b) => a - b) });
+                              }
+                              (e.target as HTMLInputElement).value = "";
+                            }
+                          }}
+                        />
+                        {settings.chapterBreaks.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {settings.chapterBreaks.map((bp, idx) => (
+                              <span key={bp} className="flex items-center gap-1 bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full">
+                                第{idx + 2}章 p.{bp}
+                                <button
+                                  onClick={() => updateSettings({ chapterBreaks: settings.chapterBreaks.filter((b) => b !== bp) })}
+                                  className="ml-0.5 text-blue-400 hover:text-blue-700"
+                                >✕</button>
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-gray-400">区切りなし：すべて第1章</p>
+                        )}
+                      </div>
+                    )}
                   </div>
-                </div>
+                ))}
               </div>
             </div>
 
@@ -579,7 +627,36 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
       <div className="flex flex-1 overflow-hidden">
         {/* 左パネル（ページリスト） */}
         <div className="flex-1 md:flex-none md:w-80 md:border-r md:border-gray-200 overflow-y-auto">
-          <div className="p-4 flex flex-col gap-3">
+          {/* モバイルのみ: 全文表示 */}
+          {showFullText && (
+            <div className="md:hidden p-4 flex flex-col gap-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-gray-700">全文</p>
+                  <p className="text-xs text-gray-400">{donePages.length}ページ・{totalChars.toLocaleString()}文字</p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => downloadText(fullText, book.title)}
+                    className="text-xs bg-blue-100 text-blue-600 px-3 py-1.5 rounded-xl font-medium active:scale-95 transition-transform"
+                  >
+                    DL
+                  </button>
+                  <button
+                    onClick={() => copyText(fullText, "full")}
+                    className="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-xl active:scale-95 transition-transform"
+                  >
+                    {copiedId === "full" ? "コピー済み✓" : "全文コピー"}
+                  </button>
+                </div>
+              </div>
+              <pre className="text-sm text-gray-700 whitespace-pre-wrap font-sans bg-white rounded-2xl shadow p-3 overflow-y-auto">
+                {fullText || "（テキストなし）"}
+              </pre>
+            </div>
+          )}
+
+          <div className={`${showFullText ? "hidden md:flex" : "flex"} p-4 flex-col gap-3`}>
             {/* アップロードエリア */}
             {!showFullText && (
               <div
