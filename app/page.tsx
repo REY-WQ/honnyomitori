@@ -6,6 +6,8 @@ import { v4 as uuidv4 } from "uuid";
 import { Book } from "@/lib/types";
 import { getBooks, addBook, deleteBook, renameBook } from "@/lib/storage";
 
+type ApiStatus = "checking" | "ok" | "error";
+
 export default function Home() {
   const router = useRouter();
   const [books, setBooks] = useState<Book[]>([]);
@@ -15,6 +17,8 @@ export default function Home() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
+  const [apiError, setApiError] = useState("");
 
   async function reload() {
     const b = await getBooks();
@@ -22,7 +26,28 @@ export default function Home() {
     setLoading(false);
   }
 
-  useEffect(() => { reload(); }, []);
+  async function checkApi() {
+    setApiStatus("checking");
+    try {
+      const res = await fetch("/api/ocr");
+      const data = await res.json();
+      if (data.ok) {
+        setApiStatus("ok");
+        setApiError("");
+      } else {
+        setApiStatus("error");
+        setApiError(data.error || "不明なエラー");
+      }
+    } catch {
+      setApiStatus("error");
+      setApiError("ネットワークエラー");
+    }
+  }
+
+  useEffect(() => {
+    reload();
+    checkApi();
+  }, []);
 
   async function createBook() {
     if (!title.trim()) return;
@@ -64,7 +89,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-gray-50 p-4 max-w-lg mx-auto" onClick={() => { setDeletingId(null); }}>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-800">📚 本棚</h1>
         <button
           onClick={() => setShowInput(true)}
@@ -73,6 +98,31 @@ export default function Home() {
           + 新しい本
         </button>
       </div>
+
+      {/* API状態バナー */}
+      {apiStatus === "error" && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-3 mb-4 flex items-start gap-2">
+          <span className="text-red-500 text-sm shrink-0">⚠️</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-red-700">OCR機能が使えません</p>
+            <p className="text-xs text-red-500 mt-0.5 break-all">{apiError}</p>
+            <p className="text-xs text-red-400 mt-1">Google Cloud ConsoleでCloud Vision APIキーを確認してください</p>
+          </div>
+          <button onClick={checkApi} className="text-xs text-red-400 underline shrink-0">再確認</button>
+        </div>
+      )}
+      {apiStatus === "ok" && (
+        <div className="bg-green-50 border border-green-200 rounded-2xl p-2.5 mb-4 flex items-center gap-2">
+          <span className="text-green-500 text-sm">✓</span>
+          <p className="text-xs text-green-700 font-medium">OCR機能は正常に動作しています</p>
+        </div>
+      )}
+      {apiStatus === "checking" && (
+        <div className="bg-gray-50 border border-gray-200 rounded-2xl p-2.5 mb-4 flex items-center gap-2">
+          <span className="text-gray-400 text-xs animate-pulse">●</span>
+          <p className="text-xs text-gray-400">OCR接続を確認中...</p>
+        </div>
+      )}
 
       {showInput && (
         <div className="bg-white rounded-2xl shadow p-4 mb-4">
@@ -107,11 +157,13 @@ export default function Home() {
         <div className="flex flex-col gap-3">
           {books.map((book) => {
             const done = book.pages.filter((p) => p.status === "done");
+            const processing = book.pages.filter((p) => p.status === "processing").length;
+            const errors = book.pages.filter((p) => p.status === "error").length;
             const totalChars = done.reduce((s, p) => s + p.text.length, 0);
             return (
               <div key={book.id} className="bg-white rounded-2xl shadow p-4" onClick={(e) => e.stopPropagation()}>
                 {editingId === book.id ? (
-                  <div className="flex gap-2 mb-1">
+                  <div className="flex gap-2">
                     <input
                       autoFocus
                       type="text"
@@ -125,15 +177,17 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="flex items-center justify-between">
-                    <button onClick={() => router.push(`/book/${book.id}`)} className="flex-1 text-left">
-                      <p className="font-semibold text-gray-800">{book.title}</p>
-                      <p className="text-xs text-gray-400 mt-0.5">
-                        {done.length} / {book.pages.length} ページ完了
-                        {totalChars > 0 && <span className="ml-1">・{totalChars.toLocaleString()}文字</span>}
-                        <span className="ml-1">・{new Date(book.createdAt).toLocaleDateString("ja-JP")}</span>
+                    <button onClick={() => router.push(`/book/${book.id}`)} className="flex-1 text-left min-w-0">
+                      <p className="font-semibold text-gray-800 truncate">{book.title}</p>
+                      <p className="text-xs text-gray-400 mt-0.5 flex flex-wrap gap-x-1">
+                        <span>{done.length} / {book.pages.length} ページ完了</span>
+                        {totalChars > 0 && <span>・{totalChars.toLocaleString()}文字</span>}
+                        {processing > 0 && <span className="text-blue-500">・処理中{processing}枚</span>}
+                        {errors > 0 && <span className="text-red-400">・{errors}件エラー</span>}
+                        <span>・{new Date(book.createdAt).toLocaleDateString("ja-JP")}</span>
                       </p>
                     </button>
-                    <div className="flex items-center gap-2 ml-2">
+                    <div className="flex items-center gap-2 ml-2 shrink-0">
                       <button onClick={() => startEdit(book)} className="text-gray-300 hover:text-blue-400 text-sm">✏️</button>
                       {deletingId === book.id ? (
                         <button

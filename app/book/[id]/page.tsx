@@ -252,20 +252,27 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
                     >
                       <button
                         onClick={() => setExpandedPage(expandedPage === page.id ? null : page.id)}
-                        className="flex items-center gap-2 flex-1 text-left min-w-0"
+                        className="flex-1 text-left min-w-0"
                       >
-                        <span className="text-sm font-medium text-gray-700 shrink-0">ページ {page.pageNumber}</span>
-                        {page.status === "processing" && (
-                          <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full animate-pulse shrink-0">処理中</span>
-                        )}
-                        {page.status === "done" && (
-                          <>
-                            <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full shrink-0">完了</span>
-                            <span className="text-xs text-gray-400 shrink-0">{page.text.length.toLocaleString()}文字</span>
-                          </>
-                        )}
-                        {page.status === "error" && (
-                          <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full shrink-0">エラー</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-gray-700 shrink-0">ページ {page.pageNumber}</span>
+                          {page.status === "processing" && (
+                            <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full animate-pulse shrink-0">処理中</span>
+                          )}
+                          {page.status === "done" && (
+                            <>
+                              <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full shrink-0">完了</span>
+                              <span className="text-xs text-gray-400 shrink-0">{page.text.length.toLocaleString()}文字</span>
+                            </>
+                          )}
+                          {page.status === "error" && (
+                            <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full shrink-0">エラー</span>
+                          )}
+                        </div>
+                        {page.status === "done" && expandedPage !== page.id && page.text && (
+                          <p className="text-xs text-gray-400 mt-0.5 truncate">
+                            {page.text.replace(/\n/g, " ").slice(0, 60)}
+                          </p>
                         )}
                       </button>
                       <div className="flex items-center gap-1.5 shrink-0 ml-2">

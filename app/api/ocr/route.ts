@@ -1,5 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 
+const TEST_IMAGE = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+export async function GET() {
+  const apiKey = process.env.GOOGLE_VISION_API_KEY;
+  if (!apiKey) return NextResponse.json({ ok: false, error: "APIキーが設定されていません" });
+
+  const response = await fetch(
+    `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requests: [{ image: { content: TEST_IMAGE }, features: [{ type: "DOCUMENT_TEXT_DETECTION" }] }],
+      }),
+    }
+  );
+  const data = await response.json();
+  if (!response.ok) return NextResponse.json({ ok: false, error: data.error?.message || "接続失敗" });
+  if (data.responses?.[0]?.error) return NextResponse.json({ ok: false, error: data.responses[0].error.message });
+  return NextResponse.json({ ok: true });
+}
+
 export async function POST(req: NextRequest) {
   const apiKey = process.env.GOOGLE_VISION_API_KEY;
   if (!apiKey) {
