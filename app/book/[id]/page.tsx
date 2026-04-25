@@ -11,6 +11,29 @@ import { compressImage } from "@/lib/compress";
 const PARALLEL = 3;
 const OCR_TIMEOUT_MS = 30000;
 
+// 設定の型定義（将来の設定追加に対応できるよう拡張性を持たせる）
+interface BookSettings {
+  textMode: "continuous" | "paginated"; // テキスト結合モード
+  // 将来追加できる設定例:
+  // ocrLanguage: "ja" | "en" | "auto";
+  // autoExpand: boolean;
+}
+
+const DEFAULT_SETTINGS: BookSettings = { textMode: "continuous" };
+
+function loadSettings(bookId: string): BookSettings {
+  try {
+    if (typeof window === "undefined") return DEFAULT_SETTINGS;
+    const json = localStorage.getItem(`ocr-settings-${bookId}`);
+    if (!json) return DEFAULT_SETTINGS;
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(json) };
+  } catch { return DEFAULT_SETTINGS; }
+}
+
+function saveSettings(bookId: string, s: BookSettings) {
+  try { localStorage.setItem(`ocr-settings-${bookId}`, JSON.stringify(s)); } catch { /* 無視 */ }
+}
+
 function parseOcrError(msg: string): string {
   if (msg.includes("API key not valid") || msg.includes("API_KEY_INVALID")) return "APIキーが無効です（Google Cloudで確認が必要）";
   if (msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED")) return "API利用上限に達しました。しばらく待ってください";
@@ -33,7 +56,8 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
   const [fileReading, setFileReading] = useState(false);
   const [editingText, setEditingText] = useState<string | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
-  const [fullTextSeparated, setFullTextSeparated] = useState(false);
+  const [settings, setSettings] = useState<BookSettings>(DEFAULT_SETTINGS);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const retryFileInputRef = useRef<HTMLInputElement>(null);
@@ -63,6 +87,7 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
       if (!b) { router.push("/"); return; }
       const stuck = b.pages.filter((p) => p.status === "processing");
       if (stuck.length > 0) setStuckCount(stuck.length);
+      setSettings(loadSettings(id));
       setBook(b);
 
       // デスクトップで初回ロード時に最初のページを自動選択
@@ -237,6 +262,12 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
     setEditingText(page.text);
   }
 
+  function updateSettings(patch: Partial<BookSettings>) {
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    saveSettings(bookIdRef.current, next);
+  }
+
   function copyText(text: string, id?: string) {
     navigator.clipboard.writeText(text);
     if (id) {
@@ -272,21 +303,17 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
       )
     : book.pages;
 
-  const fullTextPlain = book.pages
+  const sortedFinished = book.pages
     .slice().sort((a, b) => a.pageNumber - b.pageNumber)
-    .filter((p) => p.status === "done" || p.status === "error")
-    .map((p) => p.status === "error" ? `【ページ${p.pageNumber}：取得失敗】` : p.text)
-    .join("\n\n");
+    .filter((p) => p.status === "done" || p.status === "error");
 
-  const fullTextSep = book.pages
-    .slice().sort((a, b) => a.pageNumber - b.pageNumber)
-    .filter((p) => p.status === "done" || p.status === "error")
-    .map((p) => p.status === "error"
-      ? `── ページ ${p.pageNumber} ──\n【取得失敗】`
-      : `── ページ ${p.pageNumber} ──\n${p.text}`)
-    .join("\n\n");
-
-  const fullText = fullTextSeparated ? fullTextSep : fullTextPlain;
+  const fullText = settings.textMode === "paginated"
+    ? sortedFinished
+        .map((p) => p.status === "error" ? `── ページ ${p.pageNumber} ──\n【取得失敗】` : `── ページ ${p.pageNumber} ──\n${p.text}`)
+        .join("\n\n")
+    : sortedFinished
+        .map((p) => p.status === "error" ? `【ページ${p.pageNumber}：取得失敗】` : p.text)
+        .join("\n\n");
 
   // --------- 右パネルコンテンツ ---------
   function RightPanel() {
@@ -299,12 +326,6 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
               <p className="text-xs text-gray-400">{donePages.length}ページ・{totalChars.toLocaleString()}文字</p>
             </div>
             <div className="flex gap-2 flex-wrap">
-              <button
-                onClick={() => setFullTextSeparated(!fullTextSeparated)}
-                className="text-xs bg-gray-100 text-gray-600 px-3 py-1.5 rounded-xl active:scale-95 transition-transform"
-              >
-                {fullTextSeparated ? "区切りなし" : "ページ区切り"}
-              </button>
               <button
                 onClick={() => downloadText(fullText, book!.title)}
                 className="text-xs bg-blue-100 text-blue-600 px-3 py-1.5 rounded-xl font-medium active:scale-95 transition-transform"
@@ -470,15 +491,76 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
             </div>
           )}
         </div>
-        {(donePages.length > 0 || errorCount > 0) && (
+        <div className="flex items-center gap-2 shrink-0">
+          {(donePages.length > 0 || errorCount > 0) && (
+            <button
+              onClick={() => { setShowFullText(!showFullText); setSelectedPageId(null); }}
+              className="text-xs bg-green-100 text-green-700 px-3 py-1.5 rounded-xl font-medium active:scale-95 transition-transform"
+            >
+              {showFullText ? "ページ別" : "全文"}
+            </button>
+          )}
           <button
-            onClick={() => { setShowFullText(!showFullText); setSelectedPageId(null); }}
-            className="text-xs bg-green-100 text-green-700 px-3 py-1.5 rounded-xl font-medium shrink-0 active:scale-95 transition-transform"
+            onClick={() => setSettingsOpen(true)}
+            className="text-gray-400 hover:text-gray-600 text-lg active:scale-90 transition-transform"
+            title="設定"
           >
-            {showFullText ? "ページ別" : "全文"}
+            ⚙️
           </button>
-        )}
+        </div>
       </div>
+
+      {/* 設定パネル */}
+      {settingsOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end md:items-center justify-center"
+          onClick={() => setSettingsOpen(false)}
+        >
+          <div className="absolute inset-0 bg-black/40" />
+          <div
+            className="relative bg-white w-full max-w-sm mx-4 rounded-2xl shadow-xl p-5 z-10 mb-4 md:mb-0"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-semibold text-gray-800">⚙️ 設定</h2>
+              <button onClick={() => setSettingsOpen(false)} className="text-gray-400 text-lg active:scale-90 transition-transform">✕</button>
+            </div>
+
+            {/* テキスト結合モード */}
+            <div className="mb-4">
+              <p className="text-sm font-medium text-gray-700 mb-2">テキスト結合モード</p>
+              <div className="flex flex-col gap-2">
+                {([
+                  { value: "continuous", label: "連続（区切りなし）", desc: "全ページのテキストをそのまま繋げる" },
+                  { value: "paginated", label: "ページ区切りあり", desc: "各ページにページ番号のヘッダーを付ける" },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => updateSettings({ textMode: opt.value })}
+                    className={`flex items-start gap-3 p-3 rounded-xl border-2 text-left transition-colors active:scale-98 ${settings.textMode === opt.value ? "border-blue-400 bg-blue-50" : "border-gray-100 hover:border-gray-200"}`}
+                  >
+                    <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 ${settings.textMode === opt.value ? "border-blue-500 bg-blue-500" : "border-gray-300"}`} />
+                    <div>
+                      <p className="text-sm font-medium text-gray-700">{opt.label}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">{opt.desc}</p>
+                    </div>
+                  </button>
+                ))}
+                {/* 将来の章モード（準備中） */}
+                <div className="flex items-start gap-3 p-3 rounded-xl border-2 border-gray-100 opacity-40">
+                  <span className="mt-0.5 w-4 h-4 rounded-full border-2 border-gray-300 shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium text-gray-700">章モード <span className="text-xs text-orange-400 ml-1">準備中</span></p>
+                    <p className="text-xs text-gray-400 mt-0.5">ページを章ごとにまとめて表示する</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 将来の設定はここに追加 */}
+          </div>
+        </div>
+      )}
 
       {/* 中断されたページの警告 */}
       {stuckCount > 0 && (
