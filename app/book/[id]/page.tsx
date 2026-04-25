@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 import { Book, Page } from "@/lib/types";
-import { getBook, updateBook } from "@/lib/storage";
+import { getBook, addPage, updatePage } from "@/lib/storage";
 import { compressImage } from "@/lib/compress";
 
 const PARALLEL = 3;
@@ -24,14 +24,14 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
     (async () => {
       const { id } = await props.params;
       bookIdRef.current = id;
-      const b = getBook(id);
+      const b = await getBook(id);
       if (!b) { router.push("/"); return; }
       setBook(b);
     })();
   }, [props.params, router]);
 
-  function reload() {
-    const b = getBook(bookIdRef.current);
+  async function reload() {
+    const b = await getBook(bookIdRef.current);
     if (b) setBook({ ...b });
   }
 
@@ -44,17 +44,15 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
         body: JSON.stringify({ imageBase64: base64 }),
       });
       const data = await res.json();
-      const latest = getBook(bookIdRef.current)!;
-      const pg = latest.pages.find((p) => p.id === pageEntry.id)!;
-      pg.text = data.text || "";
-      pg.processedAt = new Date().toISOString();
-      pg.status = data.error ? "error" : "done";
-      updateBook(latest);
+      const updated: Page = {
+        ...pageEntry,
+        text: data.text || "",
+        processedAt: new Date().toISOString(),
+        status: data.error ? "error" : "done",
+      };
+      await updatePage(updated);
     } catch {
-      const latest = getBook(bookIdRef.current)!;
-      const pg = latest.pages.find((p) => p.id === pageEntry.id)!;
-      pg.status = "error";
-      updateBook(latest);
+      await updatePage({ ...pageEntry, status: "error" });
     }
   }
 
@@ -67,7 +65,7 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
       const batch = queueRef.current.splice(0, PARALLEL);
       setQueueCount(queueRef.current.length);
       await Promise.all(batch.map(({ file, pageEntry }) => processOne(file, pageEntry)));
-      reload();
+      await reload();
     }
 
     isRunningRef.current = false;
@@ -78,11 +76,12 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
   async function handleFiles(files: FileList | null) {
     if (!files || !book) return;
     const arr = Array.from(files);
-
-    const b = getBook(book.id)!;
+    const b = await getBook(book.id);
+    if (!b) return;
     const startPage = b.pages.length + 1;
 
-    const entries = arr.map((file, i) => {
+    const entries: { file: File; pageEntry: Page }[] = [];
+    for (let i = 0; i < arr.length; i++) {
       const pageEntry: Page = {
         id: uuidv4(),
         pageNumber: startPage + i,
@@ -90,15 +89,13 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
         processedAt: "",
         status: "processing",
       };
-      b.pages.push(pageEntry);
-      return { file, pageEntry };
-    });
+      await addPage(book.id, pageEntry);
+      entries.push({ file: arr[i], pageEntry });
+    }
 
-    updateBook(b);
-    reload();
+    await reload();
     queueRef.current.push(...entries);
     setQueueCount(queueRef.current.length);
-
     if (fileInputRef.current) fileInputRef.current.value = "";
     processQueue();
   }
@@ -159,15 +156,9 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-gray-700">ページ {page.pageNumber}</span>
-                    {page.status === "processing" && (
-                      <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full animate-pulse">処理中</span>
-                    )}
-                    {page.status === "done" && (
-                      <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full">完了</span>
-                    )}
-                    {page.status === "error" && (
-                      <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">エラー</span>
-                    )}
+                    {page.status === "processing" && <span className="text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full animate-pulse">処理中</span>}
+                    {page.status === "done" && <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full">完了</span>}
+                    {page.status === "error" && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">エラー</span>}
                   </div>
                   <span className="text-gray-300 text-sm">{expandedPage === page.id ? "▲" : "▼"}</span>
                 </button>
@@ -177,18 +168,13 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
                     {page.status === "processing" ? (
                       <p className="text-sm text-gray-400 text-center py-4">文字認識中...</p>
                     ) : page.status === "error" ? (
-                      <p className="text-sm text-red-400 text-center py-4">エラーが発生しました（画像を再度試してください）</p>
+                      <p className="text-sm text-red-400 text-center py-4">エラーが発生しました</p>
                     ) : (
                       <>
                         <pre className="text-sm text-gray-700 whitespace-pre-wrap font-sans bg-gray-50 rounded-xl p-3 max-h-60 overflow-y-auto">
                           {page.text || "（テキストなし）"}
                         </pre>
-                        <button
-                          onClick={() => copyText(page.text)}
-                          className="mt-2 w-full bg-gray-100 text-gray-600 py-2 rounded-xl text-sm"
-                        >
-                          コピー
-                        </button>
+                        <button onClick={() => copyText(page.text)} className="mt-2 w-full bg-gray-100 text-gray-600 py-2 rounded-xl text-sm">コピー</button>
                       </>
                     )}
                   </div>

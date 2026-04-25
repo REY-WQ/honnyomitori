@@ -11,12 +11,17 @@ export default function Home() {
   const [books, setBooks] = useState<Book[]>([]);
   const [title, setTitle] = useState("");
   const [showInput, setShowInput] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    setBooks(getBooks());
-  }, []);
+  async function reload() {
+    const b = await getBooks();
+    setBooks(b);
+    setLoading(false);
+  }
 
-  function createBook() {
+  useEffect(() => { reload(); }, []);
+
+  async function createBook() {
     if (!title.trim()) return;
     const book: Book = {
       id: uuidv4(),
@@ -24,15 +29,15 @@ export default function Home() {
       createdAt: new Date().toISOString(),
       pages: [],
     };
-    addBook(book);
-    setBooks(getBooks());
+    await addBook(book);
     setTitle("");
     setShowInput(false);
+    reload();
   }
 
-  function removeBook(id: string) {
-    deleteBook(id);
-    setBooks(getBooks());
+  async function removeBook(id: string) {
+    await deleteBook(id);
+    reload();
   }
 
   return (
@@ -60,23 +65,17 @@ export default function Home() {
             className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm mb-3 outline-none focus:border-blue-400"
           />
           <div className="flex gap-2">
-            <button
-              onClick={createBook}
-              className="flex-1 bg-blue-600 text-white py-2 rounded-xl text-sm font-medium"
-            >
-              作成
-            </button>
-            <button
-              onClick={() => { setShowInput(false); setTitle(""); }}
-              className="flex-1 bg-gray-100 text-gray-600 py-2 rounded-xl text-sm"
-            >
-              キャンセル
-            </button>
+            <button onClick={createBook} className="flex-1 bg-blue-600 text-white py-2 rounded-xl text-sm font-medium">作成</button>
+            <button onClick={() => { setShowInput(false); setTitle(""); }} className="flex-1 bg-gray-100 text-gray-600 py-2 rounded-xl text-sm">キャンセル</button>
           </div>
         </div>
       )}
 
-      {books.length === 0 ? (
+      {loading ? (
+        <div className="text-center text-gray-400 mt-20">
+          <p className="text-sm">読み込み中...</p>
+        </div>
+      ) : books.length === 0 ? (
         <div className="text-center text-gray-400 mt-20">
           <p className="text-4xl mb-3">📖</p>
           <p className="text-sm">まだ本がありません</p>
@@ -85,26 +84,14 @@ export default function Home() {
       ) : (
         <div className="flex flex-col gap-3">
           {books.map((book) => (
-            <div
-              key={book.id}
-              className="bg-white rounded-2xl shadow p-4 flex items-center justify-between"
-            >
-              <button
-                onClick={() => router.push(`/book/${book.id}`)}
-                className="flex-1 text-left"
-              >
+            <div key={book.id} className="bg-white rounded-2xl shadow p-4 flex items-center justify-between">
+              <button onClick={() => router.push(`/book/${book.id}`)} className="flex-1 text-left">
                 <p className="font-semibold text-gray-800">{book.title}</p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  {book.pages.filter((p) => p.status === "done").length} ページ完了
-                  　{new Date(book.createdAt).toLocaleDateString("ja-JP")}
+                  {book.pages.filter((p) => p.status === "done").length} ページ完了　{new Date(book.createdAt).toLocaleDateString("ja-JP")}
                 </p>
               </button>
-              <button
-                onClick={() => removeBook(book.id)}
-                className="text-gray-300 hover:text-red-400 ml-3 text-lg"
-              >
-                🗑️
-              </button>
+              <button onClick={() => removeBook(book.id)} className="text-gray-300 hover:text-red-400 ml-3 text-lg">🗑️</button>
             </div>
           ))}
         </div>
