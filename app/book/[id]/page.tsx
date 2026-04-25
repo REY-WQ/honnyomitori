@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 import { Book, Page } from "@/lib/types";
-import { getBook, addPage, updatePage } from "@/lib/storage";
+import { getBook, addPages, updatePage } from "@/lib/storage";
 import { compressImage } from "@/lib/compress";
 
 const PARALLEL = 3;
@@ -80,18 +80,18 @@ export default function BookPage(props: PageProps<"/book/[id]">) {
     if (!b) return;
     const startPage = b.pages.length + 1;
 
-    const entries: { file: File; pageEntry: Page }[] = [];
-    for (let i = 0; i < arr.length; i++) {
-      const pageEntry: Page = {
+    const entries: { file: File; pageEntry: Page }[] = arr.map((file, i) => ({
+      file,
+      pageEntry: {
         id: uuidv4(),
         pageNumber: startPage + i,
         text: "",
         processedAt: "",
-        status: "processing",
-      };
-      await addPage(book.id, pageEntry);
-      entries.push({ file: arr[i], pageEntry });
-    }
+        status: "processing" as const,
+      },
+    }));
+
+    await addPages(book.id, entries.map((e) => e.pageEntry));
 
     await reload();
     queueRef.current.push(...entries);

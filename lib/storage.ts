@@ -58,15 +58,21 @@ export async function deleteBook(id: string): Promise<void> {
 }
 
 export async function addPage(bookId: string, page: Page): Promise<void> {
+  await addPages(bookId, [page]);
+}
+
+export async function addPages(bookId: string, pages: Page[]): Promise<void> {
   const supabase = getSupabase();
-  await supabase.from("pages").insert({
-    id: page.id,
-    book_id: bookId,
-    page_number: page.pageNumber,
-    text: page.text,
-    processed_at: page.processedAt || null,
-    status: page.status,
-  });
+  await supabase.from("pages").insert(
+    pages.map((p) => ({
+      id: p.id,
+      book_id: bookId,
+      page_number: p.pageNumber,
+      text: p.text,
+      processed_at: p.processedAt || null,
+      status: p.status,
+    }))
+  );
 }
 
 export async function updatePage(page: Page): Promise<void> {
