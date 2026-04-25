@@ -1,65 +1,114 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { v4 as uuidv4 } from "uuid";
+import { Book } from "@/lib/types";
+import { getBooks, addBook, deleteBook } from "@/lib/storage";
 
 export default function Home() {
+  const router = useRouter();
+  const [books, setBooks] = useState<Book[]>([]);
+  const [title, setTitle] = useState("");
+  const [showInput, setShowInput] = useState(false);
+
+  useEffect(() => {
+    setBooks(getBooks());
+  }, []);
+
+  function createBook() {
+    if (!title.trim()) return;
+    const book: Book = {
+      id: uuidv4(),
+      title: title.trim(),
+      createdAt: new Date().toISOString(),
+      pages: [],
+    };
+    addBook(book);
+    setBooks(getBooks());
+    setTitle("");
+    setShowInput(false);
+  }
+
+  function removeBook(id: string) {
+    deleteBook(id);
+    setBooks(getBooks());
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <main className="min-h-screen bg-gray-50 p-4 max-w-lg mx-auto">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-800">📚 本棚</h1>
+        <button
+          onClick={() => setShowInput(true)}
+          className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium shadow"
+        >
+          + 新しい本
+        </button>
+      </div>
+
+      {showInput && (
+        <div className="bg-white rounded-2xl shadow p-4 mb-4">
+          <p className="text-sm text-gray-500 mb-2">本のタイトルを入力</p>
+          <input
+            autoFocus
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && createBook()}
+            placeholder="例：吾輩は猫である"
+            className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm mb-3 outline-none focus:border-blue-400"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={createBook}
+              className="flex-1 bg-blue-600 text-white py-2 rounded-xl text-sm font-medium"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              作成
+            </button>
+            <button
+              onClick={() => { setShowInput(false); setTitle(""); }}
+              className="flex-1 bg-gray-100 text-gray-600 py-2 rounded-xl text-sm"
             >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              キャンセル
+            </button>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      )}
+
+      {books.length === 0 ? (
+        <div className="text-center text-gray-400 mt-20">
+          <p className="text-4xl mb-3">📖</p>
+          <p className="text-sm">まだ本がありません</p>
+          <p className="text-sm">「新しい本」から追加してください</p>
         </div>
-      </main>
-    </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {books.map((book) => (
+            <div
+              key={book.id}
+              className="bg-white rounded-2xl shadow p-4 flex items-center justify-between"
+            >
+              <button
+                onClick={() => router.push(`/book/${book.id}`)}
+                className="flex-1 text-left"
+              >
+                <p className="font-semibold text-gray-800">{book.title}</p>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  {book.pages.filter((p) => p.status === "done").length} ページ完了
+                  　{new Date(book.createdAt).toLocaleDateString("ja-JP")}
+                </p>
+              </button>
+              <button
+                onClick={() => removeBook(book.id)}
+                className="text-gray-300 hover:text-red-400 ml-3 text-lg"
+              >
+                🗑️
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </main>
   );
 }
