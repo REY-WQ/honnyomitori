@@ -75,6 +75,11 @@ export async function addPages(bookId: string, pages: Page[]): Promise<void> {
   );
 }
 
+export async function deletePage(id: string): Promise<void> {
+  const supabase = getSupabase();
+  await supabase.from("pages").delete().eq("id", id);
+}
+
 export async function updatePage(page: Page): Promise<void> {
   const supabase = getSupabase();
   await supabase.from("pages").update({

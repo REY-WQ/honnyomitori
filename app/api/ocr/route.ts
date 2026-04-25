@@ -32,9 +32,17 @@ export async function POST(req: NextRequest) {
   const data = await response.json();
 
   if (!response.ok) {
-    return NextResponse.json({ error: data.error?.message || "OCR failed" }, { status: 500 });
+    const errMsg = data.error?.message || JSON.stringify(data);
+    console.error("Vision API error:", errMsg);
+    return NextResponse.json({ error: errMsg }, { status: 500 });
   }
 
-  const text = data.responses?.[0]?.fullTextAnnotation?.text || "";
+  const annotation = data.responses?.[0];
+  if (annotation?.error) {
+    console.error("Vision API response error:", annotation.error);
+    return NextResponse.json({ error: annotation.error.message }, { status: 500 });
+  }
+
+  const text = annotation?.fullTextAnnotation?.text || "";
   return NextResponse.json({ text });
 }
