@@ -159,7 +159,7 @@ export default function Home() {
   // Scroll current match into view (setTimeout gives React time to re-render expanded chapter/page first)
   useEffect(() => {
     const timer = setTimeout(() => {
-      document.querySelector("mark.bg-orange-400")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      document.querySelector("[data-search-current='true']")?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 80);
     return () => clearTimeout(timer);
   }, [bookSearchMatchIdx, chapterSearchMatchIdx, bookSearchActive, chapterSearchActive]);
@@ -552,7 +552,13 @@ export default function Home() {
     while (i !== -1) {
       if (i > last) parts.push(text.slice(last, i));
       const isCurrent = matchNum === currentGlobal;
-      parts.push(<mark key={i} className={isCurrent ? "bg-orange-400 text-white rounded px-px" : "bg-yellow-200 rounded px-px"}>{text.slice(i, i + query.length)}</mark>);
+      parts.push(
+        <mark
+          key={i}
+          data-search-current={isCurrent ? "true" : undefined}
+          className={isCurrent ? "bg-orange-400 text-white rounded px-px" : "bg-yellow-200 rounded px-px"}
+        >{text.slice(i, i + query.length)}</mark>
+      );
       last = i + q.length; matchNum++;
       i = text.toLowerCase().indexOf(q, last);
     }
@@ -771,7 +777,14 @@ export default function Home() {
                     <input
                       value={bookSearch}
                       onChange={(e) => setBookSearch(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Escape") { setBookSearch(""); setBookSearchActive(false); } }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") { setBookSearch(""); setBookSearchActive(false); }
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          if (!bookSearch.trim()) return;
+                          if (bookSearchActive) navigateBookSearch("next"); else setBookSearchActive(true);
+                        }
+                      }}
                       placeholder="全文検索..."
                       className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 w-24 outline-none focus:border-blue-300"
                     />
@@ -1202,7 +1215,15 @@ export default function Home() {
                   <input
                     value={chapterSearch}
                     onChange={(e) => setChapterSearch(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Escape") { setChapterSearch(""); setChapterSearchActive(false); setChapterSearchMatchIdx(0); } }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") { setChapterSearch(""); setChapterSearchActive(false); setChapterSearchMatchIdx(0); }
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (!chapterSearch.trim()) return;
+                        if (chapterSearchActive) navigateChapterSearch("next");
+                        else { setChapterSearchActive(true); setChapterSearchMatchIdx(0); }
+                      }
+                    }}
                     placeholder="章内検索..."
                     className="text-xs border border-gray-200 rounded-lg px-2 py-1 w-20 outline-none focus:border-blue-300"
                   />
