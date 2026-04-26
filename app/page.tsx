@@ -84,6 +84,7 @@ export default function Home() {
   const [chapterSearch, setChapterSearch] = useState("");
   const [chapterSearchActive, setChapterSearchActive] = useState(false);
   const [chapterSearchMatchIdx, setChapterSearchMatchIdx] = useState(0);
+  const [bookSearchMatchIdx, setBookSearchMatchIdx] = useState(0);
 
   const selectedBook = books.find((b) => b.id === selectedBookId) ?? null;
   const editChapter = selectedBook?.chapters.find((c) => c.id === editChapterId) ?? null;
@@ -153,6 +154,7 @@ export default function Home() {
 
   // Reset chapter search match index when query changes
   useEffect(() => { setChapterSearchMatchIdx(0); }, [chapterSearch]);
+  useEffect(() => { setBookSearchMatchIdx(0); }, [bookSearch]);
 
   // Reset chapter search when switching chapters (carry over from book search if set)
   useEffect(() => {
@@ -498,6 +500,17 @@ export default function Home() {
     return { totalMatches, pageMatches };
   }, [chapterSearchActive, chapterSearch, editChapter]);
 
+  const chapterGlobalStarts = useMemo(() => {
+    if (!bookSearchData || !selectedBook) return {} as Record<string, number>;
+    const starts: Record<string, number> = {};
+    let cumulative = 0;
+    for (const chapter of selectedBook.chapters) {
+      starts[chapter.id] = cumulative;
+      cumulative += bookSearchData.chapterCounts[chapter.id] ?? 0;
+    }
+    return starts;
+  }, [bookSearchData, selectedBook]);
+
   function renderHighlighted(text: string, query: string, currentGlobal: number, matchStart: number) {
     if (!query.trim()) return <>{text}</>;
     const q = query.toLowerCase();
@@ -530,6 +543,23 @@ export default function Home() {
     }
   }
 
+  function navigateBookSearch(dir: "prev" | "next") {
+    if (!bookSearchData || bookSearchData.total === 0 || !selectedBook) return;
+    const next = dir === "next"
+      ? (bookSearchMatchIdx + 1) % bookSearchData.total
+      : (bookSearchMatchIdx - 1 + bookSearchData.total) % bookSearchData.total;
+    setBookSearchMatchIdx(next);
+    let cumulative = 0;
+    for (const chapter of selectedBook.chapters) {
+      const count = bookSearchData.chapterCounts[chapter.id] ?? 0;
+      if (next < cumulative + count) {
+        setOpenChapterIds((prev) => { const n = new Set(prev); n.add(chapter.id); return n; });
+        break;
+      }
+      cumulative += count;
+    }
+  }
+
   async function handleSaveChapterOrder() {
     if (!sortingChapters) return;
     const updates = sortingChapters.map((c, i) => ({ id: c.id, orderIndex: i }));
@@ -554,11 +584,19 @@ export default function Home() {
           /* ===== SEARCH RESULTS MODE ===== */
           <>
             <div className="p-3 border-b border-gray-200">
-              <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center justify-between mb-1.5">
                 <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">検索結果</p>
-                <button onClick={() => { setBookSearch(""); setBookSearchActive(false); }} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
+                <button onClick={() => { setBookSearch(""); setBookSearchActive(false); setBookSearchMatchIdx(0); }} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
               </div>
-              <p className="text-xs text-gray-400">{bookSearchData ? `${bookSearchData.total}件ヒット` : "0件"}</p>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-gray-500 flex-1">
+                  {bookSearchData && bookSearchData.total > 0
+                    ? `${bookSearchMatchIdx + 1}/${bookSearchData.total}件`
+                    : "0件"}
+                </span>
+                <button onClick={() => navigateBookSearch("prev")} disabled={!bookSearchData || bookSearchData.total === 0} className="bg-gray-100 text-gray-600 text-xs rounded-lg px-2 py-1 active:scale-95 transition-transform disabled:opacity-30">↑</button>
+                <button onClick={() => navigateBookSearch("next")} disabled={!bookSearchData || bookSearchData.total === 0} className="bg-gray-100 text-gray-600 text-xs rounded-lg px-2 py-1 active:scale-95 transition-transform disabled:opacity-30">↓</button>
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-1.5">
               {bookSearchData && bookSearchData.results.length > 0 ? (
@@ -826,7 +864,9 @@ export default function Home() {
                             className="w-full mb-3 bg-blue-50 text-blue-600 border border-blue-200 rounded-xl py-2.5 text-sm font-medium active:scale-95 transition-transform"
                           >編集する場合はこちらのボタンをタップしてください</button>
                           <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap break-all">
-                            {joinPageTexts(chapter.pages)}
+                            {bookSearchActive && bookSearch.trim()
+                              ? renderHighlighted(joinPageTexts(chapter.pages), bookSearch, bookSearchMatchIdx, chapterGlobalStarts[chapter.id] ?? 0)
+                              : joinPageTexts(chapter.pages)}
                           </p>
                         </>
                       )}
