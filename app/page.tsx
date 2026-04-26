@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { Book, Chapter, Page, BookSettings } from "@/lib/types";
 import {
@@ -77,6 +77,13 @@ export default function Home() {
   const [editingPageNum, setEditingPageNum] = useState(false);
   const [editingPageNumValue, setEditingPageNumValue] = useState("");
 
+  // Search
+  const [bookSearch, setBookSearch] = useState("");
+  const [bookSearchActive, setBookSearchActive] = useState(false);
+  const [chapterSearch, setChapterSearch] = useState("");
+  const [chapterSearchActive, setChapterSearchActive] = useState(false);
+  const [chapterSearchMatchIdx, setChapterSearchMatchIdx] = useState(0);
+
   const selectedBook = books.find((b) => b.id === selectedBookId) ?? null;
   const editChapter = selectedBook?.chapters.find((c) => c.id === editChapterId) ?? null;
   const selectedPage = editChapter?.pages.find((p) => p.id === selectedPageId) ?? null;
@@ -142,6 +149,16 @@ export default function Home() {
       setSelectedPageId(editChapter.pages[0].id);
     }
   }, [view, editChapter, selectedPageId]);
+
+  // Reset chapter search match index when query changes
+  useEffect(() => { setChapterSearchMatchIdx(0); }, [chapterSearch]);
+
+  // Reset chapter search when switching chapters
+  useEffect(() => {
+    setChapterSearchActive(false);
+    setChapterSearch("");
+    setChapterSearchMatchIdx(0);
+  }, [editChapterId]);
 
   // ===== BOOK ACTIONS =====
 
@@ -251,7 +268,7 @@ export default function Home() {
     return out.join("\n");
   }
 
-  function cleanOcrText(raw: string): string {
+  function cleanOcrText(raw: string, isFirstPage = true): string {
     const SENT_END     = /[。！？…」』）]$/;
     const CHAPTER_HEAD = /^第[一二三四五六七八九十百千万\d]+[章節部]/;
     const SEPARATOR    = /^[\*\-─━=＝]{2,}$/;
@@ -264,6 +281,7 @@ export default function Home() {
       if (/^\s*\d+\s*$/.test(t)) return false;
       if (NOBRE_PRE.test(t)) return false;
       if (NOBRE_SUF.test(t)) return false;
+      if (!isFirstPage && CHAPTER_HEAD.test(t)) return false;
       return true;
     });
 
@@ -323,7 +341,8 @@ export default function Home() {
         });
         const data = await res.json();
         if (data.text !== undefined) {
-          await updatePage({ ...page, text: cleanOcrText(data.text), status: "done", processedAt: new Date().toISOString() });
+          const isFirstPage = (chapter?.pages.length ?? 0) === 0 && i === 0;
+          await updatePage({ ...page, text: cleanOcrText(data.text, isFirstPage), status: "done", processedAt: new Date().toISOString() });
         } else {
           await updatePage({ ...page, status: "error" });
         }
@@ -426,6 +445,81 @@ export default function Home() {
     const updates = editChapter.pages.map((p) => ({ id: p.id, pageNumber: p.pageNumber + offset }));
     await reorderPages(updates);
     reload();
+  }
+
+  // ===== SEARCH =====
+
+  const bookSearchData = useMemo(() => {
+    if (!bookSearchActive || !bookSearch.trim() || !selectedBook) return null;
+    const q = bookSearch.toLowerCase();
+    const results: { chapterId: string; chapterName: string; pageId: string; pageNumber: number; snippet: string }[] = [];
+    const chapterCounts: Record<string, number> = {};
+    for (const chapter of selectedBook.chapters) {
+      let total = 0;
+      for (const page of chapter.pages) {
+        if (page.status !== "done") continue;
+        const lower = page.text.toLowerCase();
+        let count = 0; let i = lower.indexOf(q);
+        while (i !== -1) { count++; i = lower.indexOf(q, i + 1); }
+        if (count > 0) {
+          total += count;
+          const firstIdx = lower.indexOf(q);
+          const snippet = page.text.slice(Math.max(0, firstIdx - 12), firstIdx + q.length + 24);
+          results.push({ chapterId: chapter.id, chapterName: chapter.name, pageId: page.id, pageNumber: page.pageNumber, snippet });
+        }
+      }
+      chapterCounts[chapter.id] = total;
+    }
+    const total = Object.values(chapterCounts).reduce((a, b) => a + b, 0);
+    return { results, chapterCounts, total };
+  }, [bookSearchActive, bookSearch, selectedBook]);
+
+  const chapterSearchData = useMemo(() => {
+    if (!chapterSearchActive || !chapterSearch.trim() || !editChapter) return null;
+    const q = chapterSearch.toLowerCase();
+    let totalMatches = 0;
+    const pageMatches: { pageId: string; count: number; startIdx: number }[] = [];
+    for (const page of editChapter.pages) {
+      if (page.status !== "done") { pageMatches.push({ pageId: page.id, count: 0, startIdx: totalMatches }); continue; }
+      const lower = page.text.toLowerCase();
+      let count = 0; let i = lower.indexOf(q);
+      while (i !== -1) { count++; i = lower.indexOf(q, i + 1); }
+      pageMatches.push({ pageId: page.id, count, startIdx: totalMatches });
+      totalMatches += count;
+    }
+    return { totalMatches, pageMatches };
+  }, [chapterSearchActive, chapterSearch, editChapter]);
+
+  function renderHighlighted(text: string, query: string, currentGlobal: number, matchStart: number) {
+    if (!query.trim()) return <>{text}</>;
+    const q = query.toLowerCase();
+    const parts: React.ReactNode[] = [];
+    let last = 0; let matchNum = matchStart;
+    let i = text.toLowerCase().indexOf(q);
+    while (i !== -1) {
+      if (i > last) parts.push(text.slice(last, i));
+      const isCurrent = matchNum === currentGlobal;
+      parts.push(<mark key={i} className={isCurrent ? "bg-orange-400 text-white rounded px-px" : "bg-yellow-200 rounded px-px"}>{text.slice(i, i + query.length)}</mark>);
+      last = i + q.length; matchNum++;
+      i = text.toLowerCase().indexOf(q, last);
+    }
+    if (last < text.length) parts.push(text.slice(last));
+    return <>{parts}</>;
+  }
+
+  function navigateChapterSearch(dir: "prev" | "next") {
+    if (!chapterSearchData || chapterSearchData.totalMatches === 0) return;
+    const total = chapterSearchData.totalMatches;
+    const next = dir === "next"
+      ? (chapterSearchMatchIdx + 1) % total
+      : (chapterSearchMatchIdx - 1 + total) % total;
+    setChapterSearchMatchIdx(next);
+    const pm = chapterSearchData.pageMatches.find((p) => next >= p.startIdx && next < p.startIdx + p.count);
+    if (pm && pm.pageId !== selectedPageId) {
+      setSelectedPageId(pm.pageId);
+      setMobilePanel("text");
+      setEditingPageId(null);
+    }
   }
 
   async function handleSaveChapterOrder() {
@@ -541,6 +635,19 @@ export default function Home() {
                 </>
               ) : (
                 <>
+                  <form onSubmit={(e) => { e.preventDefault(); if (bookSearch.trim()) setBookSearchActive(true); }} className="flex items-center gap-1">
+                    <input
+                      value={bookSearch}
+                      onChange={(e) => setBookSearch(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Escape") { setBookSearch(""); setBookSearchActive(false); } }}
+                      placeholder="全文検索..."
+                      className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 w-24 outline-none focus:border-blue-300"
+                    />
+                    <button type="submit" className="bg-gray-800 text-white text-xs rounded-lg px-2 py-1.5 shrink-0 active:scale-95">🔍</button>
+                    {bookSearchActive && (
+                      <button type="button" onClick={() => { setBookSearch(""); setBookSearchActive(false); }} className="text-gray-400 hover:text-gray-600 text-sm leading-none px-0.5">✕</button>
+                    )}
+                  </form>
                   <button onClick={() => setSortingChapters([...selectedBook.chapters])} disabled={selectedBook.chapters.length < 2} className="text-sm bg-gray-100 rounded-lg px-2.5 py-1.5 text-gray-600 active:scale-95 transition-transform disabled:opacity-30">⇅</button>
                   <button onClick={() => setShowSettings(true)} className="text-sm bg-gray-100 rounded-lg px-3 py-1.5 text-gray-600 active:scale-95 transition-transform shrink-0">⚙️ 設定</button>
                 </>
@@ -579,6 +686,52 @@ export default function Home() {
               </>
             ) : (
             <>
+            {bookSearchActive && bookSearch.trim() ? (
+              /* ===== SEARCH RESULTS VIEW ===== */
+              <>
+                <p className="text-xs text-gray-500 mb-3">
+                  {bookSearchData ? `${bookSearchData.total}件ヒット` : "0件"}
+                </p>
+                {bookSearchData && bookSearchData.results.length > 0 ? (
+                  selectedBook.chapters.map((chapter) => {
+                    const chapterResults = bookSearchData.results.filter((r) => r.chapterId === chapter.id);
+                    if (chapterResults.length === 0) return null;
+                    const hitCount = bookSearchData.chapterCounts[chapter.id] ?? 0;
+                    return (
+                      <div key={chapter.id} className="bg-white rounded-2xl shadow-sm mb-3 overflow-hidden">
+                        <div className="px-4 py-3 bg-pink-50 flex items-center justify-between">
+                          <p className="font-bold text-sm text-gray-800">{chapter.name}</p>
+                          <span className="text-xs font-bold bg-yellow-200 text-yellow-800 rounded-full px-2 py-0.5">{hitCount}件</span>
+                        </div>
+                        <div className="divide-y divide-gray-50">
+                          {chapterResults.map((r) => (
+                            <div
+                              key={r.pageId}
+                              onClick={() => {
+                                const ch = selectedBook.chapters.find((c) => c.id === r.chapterId)!;
+                                openEditView(ch);
+                                setSelectedPageId(r.pageId);
+                                setMobilePanel("text");
+                              }}
+                              className="px-4 py-2.5 cursor-pointer hover:bg-blue-50 active:scale-[0.99]"
+                            >
+                              <p className="text-xs font-semibold text-blue-600 mb-0.5">ページ {r.pageNumber}</p>
+                              <p className="text-xs text-gray-600 leading-relaxed">
+                                ...{renderHighlighted(r.snippet, bookSearch, -1, 0)}...
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="text-sm text-gray-400 text-center mt-8">「{bookSearch}」に一致するページがありません</p>
+                )}
+              </>
+            ) : (
+              /* ===== NORMAL ACCORDION VIEW ===== */
+              <>
             <p className="text-xs text-gray-400 mb-4">章をタップすると展開・テキストが表示されます</p>
 
             {selectedBook.chapters.map((chapter) => {
@@ -688,6 +841,8 @@ export default function Home() {
                 <p className="text-xs text-gray-400 mt-1.5">💡 「あとがき」など数字なしの名前も自由に入力できます</p>
               </div>
             )}
+              </>
+            )}
             </>
             )}
           </div>
@@ -727,7 +882,35 @@ export default function Home() {
                   <button onClick={handleSavePageOrder} className="flex-1 bg-green-600 text-white text-xs font-semibold rounded-xl py-2 active:scale-95 transition-transform">✓ 完了</button>
                   <button onClick={() => setSortingPages(null)} className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 py-2 active:scale-95 transition-transform">✕</button>
                 </div>
-              ) : !selectMode ? (
+              ) : selectMode ? (
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleBulkDelete}
+                    disabled={deletingPageIds.size === 0}
+                    className="flex-1 bg-red-500 text-white text-xs font-semibold rounded-xl py-2 active:scale-95 transition-transform disabled:opacity-30"
+                  >🗑 削除{deletingPageIds.size > 0 ? `（${deletingPageIds.size}件）` : ""}</button>
+                  <button
+                    onClick={exitSelectMode}
+                    className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 py-2 active:scale-95 transition-transform"
+                  >✕</button>
+                </div>
+              ) : chapterSearchActive ? (
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1 text-xs">
+                    <span className="font-semibold text-gray-700 truncate flex-1">{chapterSearch}</span>
+                    <span className="text-gray-400 shrink-0">
+                      {chapterSearchData && chapterSearchData.totalMatches > 0
+                        ? `${chapterSearchMatchIdx + 1}/${chapterSearchData.totalMatches}件`
+                        : "0件"}
+                    </span>
+                  </div>
+                  <div className="flex gap-1">
+                    <button onClick={() => navigateChapterSearch("prev")} disabled={!chapterSearchData || chapterSearchData.totalMatches === 0} className="flex-1 bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl py-1.5 active:scale-95 transition-transform disabled:opacity-30">↑</button>
+                    <button onClick={() => navigateChapterSearch("next")} disabled={!chapterSearchData || chapterSearchData.totalMatches === 0} className="flex-1 bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl py-1.5 active:scale-95 transition-transform disabled:opacity-30">↓</button>
+                    <button onClick={() => { setChapterSearch(""); setChapterSearchActive(false); setChapterSearchMatchIdx(0); }} className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 py-1.5 active:scale-95 transition-transform">✕</button>
+                  </div>
+                </div>
+              ) : (
                 <>
                   <div className="flex gap-2 mb-2">
                     <button
@@ -748,18 +931,6 @@ export default function Home() {
                     className="w-full bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl py-2 active:scale-95 transition-transform disabled:opacity-30"
                   >選択</button>
                 </>
-              ) : (
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleBulkDelete}
-                    disabled={deletingPageIds.size === 0}
-                    className="flex-1 bg-red-500 text-white text-xs font-semibold rounded-xl py-2 active:scale-95 transition-transform disabled:opacity-30"
-                  >🗑 削除{deletingPageIds.size > 0 ? `（${deletingPageIds.size}件）` : ""}</button>
-                  <button
-                    onClick={exitSelectMode}
-                    className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 py-2 active:scale-95 transition-transform"
-                  >✕</button>
-                </div>
               )}
               <input
                 ref={fileInputRef}
@@ -806,7 +977,13 @@ export default function Home() {
                   </div>
                 ))
               ) : (
-                editChapter?.pages.map((page) => (
+                editChapter?.pages.map((page) => {
+                  const pm = chapterSearchActive && chapterSearchData
+                    ? chapterSearchData.pageMatches.find((m) => m.pageId === page.id)
+                    : null;
+                  const hasHit = pm && pm.count > 0;
+                  const isCurrentMatch = hasHit && chapterSearchMatchIdx >= pm!.startIdx && chapterSearchMatchIdx < pm!.startIdx + pm!.count;
+                  return (
                   <div
                     key={page.id}
                     data-page-id={page.id}
@@ -840,6 +1017,8 @@ export default function Home() {
                     }}
                     className={`flex items-center gap-2 px-2 py-2.5 rounded-xl cursor-pointer mb-0.5 select-none ${
                       selectMode && deletingPageIds.has(page.id) ? "bg-red-50" :
+                      isCurrentMatch ? "bg-orange-100" :
+                      hasHit ? "bg-yellow-50" :
                       !selectMode && selectedPageId === page.id ? "bg-blue-50" : "hover:bg-gray-50"
                     }`}
                   >
@@ -855,6 +1034,9 @@ export default function Home() {
                         {page.status === "done" ? `✓ ${page.text.length}文字` : page.status === "processing" ? "⟳ 処理中" : page.status === "error" ? "✕ エラー" : "⏳ 待機中"}
                       </p>
                     </div>
+                    {hasHit && (
+                      <span className="text-[10px] font-bold bg-yellow-200 text-yellow-800 rounded-full px-1.5 py-0.5 shrink-0">{pm!.count}</span>
+                    )}
                     {!selectMode && page.status === "error" && (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleRetryPage(page); }}
@@ -862,7 +1044,8 @@ export default function Home() {
                       >🔄</button>
                     )}
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
 
@@ -925,6 +1108,19 @@ export default function Home() {
                   >ページ {selectedPage?.pageNumber ?? "—"}</span>
                 )}
                 <button onClick={() => navigatePage("next")} disabled={!selectedPageId || editChapter?.pages.at(-1)?.id === selectedPageId} className="bg-gray-100 rounded-lg px-2.5 py-1 text-sm disabled:opacity-30 active:scale-95 transition-transform">→</button>
+                <form onSubmit={(e) => { e.preventDefault(); if (chapterSearch.trim()) { setChapterSearchActive(true); setChapterSearchMatchIdx(0); } }} className="flex items-center gap-1 ml-1">
+                  <input
+                    value={chapterSearch}
+                    onChange={(e) => setChapterSearch(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Escape") { setChapterSearch(""); setChapterSearchActive(false); setChapterSearchMatchIdx(0); } }}
+                    placeholder="章内検索..."
+                    className="text-xs border border-gray-200 rounded-lg px-2 py-1 w-20 outline-none focus:border-blue-300"
+                  />
+                  <button type="submit" className="bg-gray-800 text-white text-xs rounded-lg px-1.5 py-1 shrink-0 active:scale-95">🔍</button>
+                  {chapterSearchActive && (
+                    <button type="button" onClick={() => { setChapterSearch(""); setChapterSearchActive(false); setChapterSearchMatchIdx(0); }} className="text-gray-400 hover:text-gray-600 text-sm leading-none px-0.5">✕</button>
+                  )}
+                </form>
               </div>
               <div className="flex items-center gap-1.5">
                 <button onClick={() => { setView("text"); setMobilePanel("list"); setEditingPageId(null); }} className="text-xs bg-gray-100 text-gray-600 rounded-lg px-2.5 py-1.5 active:scale-95 transition-transform whitespace-nowrap">← 戻る</button>
@@ -975,7 +1171,18 @@ export default function Home() {
                   ) : (
                     <>
                       <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
-                        {selectedPage.status === "done" ? selectedPage.text : selectedPage.status === "processing" ? "⟳ OCR処理中..." : selectedPage.status === "error" ? "✕ エラーが発生しました" : "⏳ 待機中"}
+                        {selectedPage.status === "done"
+                          ? (chapterSearchActive && chapterSearch.trim()
+                              ? renderHighlighted(
+                                  selectedPage.text,
+                                  chapterSearch,
+                                  chapterSearchMatchIdx,
+                                  chapterSearchData?.pageMatches.find((m) => m.pageId === selectedPage.id)?.startIdx ?? 0
+                                )
+                              : selectedPage.text)
+                          : selectedPage.status === "processing" ? "⟳ OCR処理中..."
+                          : selectedPage.status === "error" ? "✕ エラーが発生しました"
+                          : "⏳ 待機中"}
                       </p>
                       {selectedPage.status === "done" && (
                         <button
