@@ -220,17 +220,36 @@ export default function Home() {
   // ===== PAGE ACTIONS =====
 
   function cleanOcrText(raw: string): string {
-    const withoutPageNums = raw
-      .split("\n")
-      .filter((line) => !/^\s*\d+\s*$/.test(line))
-      .join("\n");
-    // Split by paragraph breaks, join wrapped lines within each paragraph
-    return withoutPageNums
-      .split(/\n{2,}/)
-      .map((para) => para.split("\n").join(""))
-      .filter((para) => para.trim().length > 0)
-      .join("\n")
-      .trim();
+    const SENT_END     = /[。！？…」』）]$/;
+    const CHAPTER_HEAD = /^第[一二三四五六七八九十百千万\d]+[章節部]/;
+    const SEPARATOR    = /^[\*\-─━=＝]{2,}$/;
+    const NOBRE_PRE    = /^\d+\s+第[一二三四五六七八九十百千万\d]+[章節部]/;
+    const NOBRE_SUF    = /第[一二三四五六七八九十百千万\d]+[章節部].*\d+$/;
+
+    const lines = raw.split("\n").filter((line) => {
+      const t = line.trim();
+      if (!t) return false;
+      if (/^\s*\d+\s*$/.test(t)) return false;
+      if (NOBRE_PRE.test(t)) return false;
+      if (NOBRE_SUF.test(t)) return false;
+      return true;
+    });
+
+    const out: string[] = [];
+    let buffer = "";
+
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (!t) continue;
+      buffer = buffer ? buffer + t : t;
+      const keep = SENT_END.test(t) || CHAPTER_HEAD.test(t) || SEPARATOR.test(t);
+      if (keep || i === lines.length - 1) {
+        out.push(buffer);
+        buffer = "";
+      }
+    }
+    if (buffer) out.push(buffer);
+    return out.join("\n").trim();
   }
 
   async function handleUploadPhotos(files: FileList) {
