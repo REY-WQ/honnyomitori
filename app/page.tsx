@@ -197,7 +197,7 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bookSearchActive]);
 
-  // Auto-navigate to first matching page when chapter search activates
+  // Auto-navigate to first matching page when chapter search activates; focus input so Enter works
   useEffect(() => {
     if (!chapterSearchActive || !chapterSearchData || chapterSearchData.totalMatches === 0) return;
     const pm = chapterSearchData.pageMatches.find((m) => m.count > 0);
@@ -206,6 +206,7 @@ export default function Home() {
       setMobilePanel("text");
       setEditingPageId(null);
     }
+    setTimeout(() => { chapterSearchInputRef.current?.focus(); }, 200);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chapterSearchActive]);
 
