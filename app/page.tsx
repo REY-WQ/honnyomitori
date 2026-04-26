@@ -72,6 +72,7 @@ export default function Home() {
   const [sortingPages, setSortingPages] = useState<Page[] | null>(null);
   const [sortingChapters, setSortingChapters] = useState<Chapter[] | null>(null);
   const dragIndexRef = useRef<number | null>(null);
+  const carryOverSearchRef = useRef<string | null>(null);
 
   // Page number inline edit
   const [editingPageNum, setEditingPageNum] = useState(false);
@@ -153,11 +154,18 @@ export default function Home() {
   // Reset chapter search match index when query changes
   useEffect(() => { setChapterSearchMatchIdx(0); }, [chapterSearch]);
 
-  // Reset chapter search when switching chapters
+  // Reset chapter search when switching chapters (carry over from book search if set)
   useEffect(() => {
-    setChapterSearchActive(false);
-    setChapterSearch("");
-    setChapterSearchMatchIdx(0);
+    if (carryOverSearchRef.current !== null) {
+      setChapterSearch(carryOverSearchRef.current);
+      setChapterSearchActive(true);
+      setChapterSearchMatchIdx(0);
+      carryOverSearchRef.current = null;
+    } else {
+      setChapterSearchActive(false);
+      setChapterSearch("");
+      setChapterSearchMatchIdx(0);
+    }
   }, [editChapterId]);
 
   // ===== BOOK ACTIONS =====
@@ -540,76 +548,130 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/30 z-30 md:hidden" onClick={() => setShowSidebar(false)} />
       )}
 
-      {/* ===== LEFT PANEL: テキスト一覧 ===== */}
+      {/* ===== LEFT PANEL: テキスト一覧 / 検索結果 ===== */}
       <aside className={`absolute md:relative inset-y-0 left-0 z-40 md:z-auto h-full w-64 md:w-56 md:min-w-56 bg-white border-r border-gray-200 flex flex-col transition-transform duration-200 ease-in-out ${showSidebar ? "translate-x-0" : "-translate-x-full md:translate-x-0"}`}>
-        <div className="p-3 border-b border-gray-200">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">テキスト一覧</p>
-          <button
-            onClick={() => setShowNewBook(true)}
-            className="w-full bg-blue-600 text-white text-xs font-semibold rounded-xl py-2 active:scale-95 transition-transform"
-          >＋ 新規作成</button>
-        </div>
-
-        {showNewBook && (
-          <div className="p-2 border-b border-gray-100">
-            <input
-              autoFocus
-              value={newBookTitle}
-              onChange={(e) => setNewBookTitle(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleCreateBook(); if (e.key === "Escape") setShowNewBook(false); }}
-              placeholder="タイトルを入力"
-              className="w-full border border-blue-300 rounded-lg px-2 py-1.5 text-xs outline-none mb-1.5"
-            />
-            <div className="flex gap-1">
-              <button onClick={handleCreateBook} className="flex-1 bg-blue-600 text-white text-xs rounded-lg py-1.5 font-semibold">作成</button>
-              <button onClick={() => setShowNewBook(false)} className="flex-1 bg-gray-100 text-gray-500 text-xs rounded-lg py-1.5">✕</button>
+        {bookSearchActive && bookSearch.trim() && selectedBook ? (
+          /* ===== SEARCH RESULTS MODE ===== */
+          <>
+            <div className="p-3 border-b border-gray-200">
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">検索結果</p>
+                <button onClick={() => { setBookSearch(""); setBookSearchActive(false); }} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
+              </div>
+              <p className="text-xs text-gray-400">{bookSearchData ? `${bookSearchData.total}件ヒット` : "0件"}</p>
             </div>
-          </div>
-        )}
-
-        <div className="flex-1 overflow-y-auto p-1.5">
-          {loading ? (
-            <p className="text-xs text-gray-400 text-center mt-8">読み込み中...</p>
-          ) : books.length === 0 ? (
-            <p className="text-xs text-gray-400 text-center mt-8">まだテキストがありません</p>
-          ) : books.map((book) => (
-            <div
-              key={book.id}
-              onClick={(e) => { e.stopPropagation(); setSelectedBookId(book.id); setView("text"); setEditingPageId(null); setShowSidebar(false); }}
-              className={`rounded-xl px-2.5 py-2 mb-1 cursor-pointer group ${selectedBookId === book.id ? "bg-blue-50" : "hover:bg-gray-50"}`}
-            >
-              {renamingBookId === book.id ? (
-                <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-                  <input
-                    autoFocus
-                    value={renameBookTitle}
-                    onChange={(e) => setRenameBookTitle(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") handleRenameBook(book.id); if (e.key === "Escape") setRenamingBookId(null); }}
-                    className="flex-1 border border-blue-300 rounded-lg px-2 py-1 text-xs outline-none"
-                  />
-                  <button onClick={() => handleRenameBook(book.id)} className="text-blue-600 text-xs px-1">✓</button>
-                </div>
+            <div className="flex-1 overflow-y-auto p-1.5">
+              {bookSearchData && bookSearchData.results.length > 0 ? (
+                selectedBook.chapters.map((chapter) => {
+                  const chapterResults = bookSearchData.results.filter((r) => r.chapterId === chapter.id);
+                  if (chapterResults.length === 0) return null;
+                  const hitCount = bookSearchData.chapterCounts[chapter.id] ?? 0;
+                  return (
+                    <div key={chapter.id} className="mb-2">
+                      <div className="flex items-center justify-between px-2 py-1.5">
+                        <p className="text-xs font-bold text-gray-600 truncate">{chapter.name}</p>
+                        <span className="text-[10px] font-bold bg-yellow-200 text-yellow-800 rounded-full px-1.5 py-0.5 shrink-0 ml-1">{hitCount}件</span>
+                      </div>
+                      {chapterResults.map((r) => (
+                        <div
+                          key={r.pageId}
+                          onClick={() => {
+                            const ch = selectedBook.chapters.find((c) => c.id === r.chapterId)!;
+                            carryOverSearchRef.current = bookSearch;
+                            openEditView(ch);
+                            setSelectedPageId(r.pageId);
+                            setMobilePanel("text");
+                            setShowSidebar(false);
+                          }}
+                          className="px-2 py-2 rounded-xl cursor-pointer hover:bg-blue-50 active:scale-[0.99] mb-0.5"
+                        >
+                          <p className="text-xs font-semibold text-blue-600 mb-0.5">ページ {r.pageNumber}</p>
+                          <p className="text-[11px] text-gray-500 leading-relaxed">
+                            ...{renderHighlighted(r.snippet, bookSearch, -1, 0)}...
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })
               ) : (
-                <div className="flex items-center justify-between">
-                  <div className="min-w-0 flex-1">
-                    <p className={`text-xs font-semibold truncate ${selectedBookId === book.id ? "text-blue-700" : "text-gray-800"}`}>{book.title}</p>
-                    <p className="text-[10px] text-gray-400 mt-0.5">
-                      {book.chapters.length}章 ・ {book.chapters.reduce((s, c) => s + c.pages.length, 0)}ページ
-                    </p>
-                  </div>
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 shrink-0 ml-1" onClick={(e) => e.stopPropagation()}>
-                    <button onClick={() => { setRenamingBookId(book.id); setRenameBookTitle(book.title); }} className="text-gray-300 hover:text-blue-400 text-xs">✏️</button>
-                    {deletingBookId === book.id ? (
-                      <button onClick={() => handleDeleteBook(book.id)} className="text-[10px] bg-red-500 text-white px-1.5 py-0.5 rounded-full">確認</button>
-                    ) : (
-                      <button onClick={(e) => { e.stopPropagation(); handleDeleteBook(book.id); }} className="text-gray-300 hover:text-red-400 text-xs">🗑️</button>
-                    )}
-                  </div>
-                </div>
+                <p className="text-xs text-gray-400 text-center mt-8">「{bookSearch}」に一致するページがありません</p>
               )}
             </div>
-          ))}
-        </div>
+          </>
+        ) : (
+          /* ===== NORMAL BOOK LIST MODE ===== */
+          <>
+            <div className="p-3 border-b border-gray-200">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">テキスト一覧</p>
+              <button
+                onClick={() => setShowNewBook(true)}
+                className="w-full bg-blue-600 text-white text-xs font-semibold rounded-xl py-2 active:scale-95 transition-transform"
+              >＋ 新規作成</button>
+            </div>
+
+            {showNewBook && (
+              <div className="p-2 border-b border-gray-100">
+                <input
+                  autoFocus
+                  value={newBookTitle}
+                  onChange={(e) => setNewBookTitle(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleCreateBook(); if (e.key === "Escape") setShowNewBook(false); }}
+                  placeholder="タイトルを入力"
+                  className="w-full border border-blue-300 rounded-lg px-2 py-1.5 text-xs outline-none mb-1.5"
+                />
+                <div className="flex gap-1">
+                  <button onClick={handleCreateBook} className="flex-1 bg-blue-600 text-white text-xs rounded-lg py-1.5 font-semibold">作成</button>
+                  <button onClick={() => setShowNewBook(false)} className="flex-1 bg-gray-100 text-gray-500 text-xs rounded-lg py-1.5">✕</button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex-1 overflow-y-auto p-1.5">
+              {loading ? (
+                <p className="text-xs text-gray-400 text-center mt-8">読み込み中...</p>
+              ) : books.length === 0 ? (
+                <p className="text-xs text-gray-400 text-center mt-8">まだテキストがありません</p>
+              ) : books.map((book) => (
+                <div
+                  key={book.id}
+                  onClick={(e) => { e.stopPropagation(); setSelectedBookId(book.id); setView("text"); setEditingPageId(null); setShowSidebar(false); }}
+                  className={`rounded-xl px-2.5 py-2 mb-1 cursor-pointer group ${selectedBookId === book.id ? "bg-blue-50" : "hover:bg-gray-50"}`}
+                >
+                  {renamingBookId === book.id ? (
+                    <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        autoFocus
+                        value={renameBookTitle}
+                        onChange={(e) => setRenameBookTitle(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") handleRenameBook(book.id); if (e.key === "Escape") setRenamingBookId(null); }}
+                        className="flex-1 border border-blue-300 rounded-lg px-2 py-1 text-xs outline-none"
+                      />
+                      <button onClick={() => handleRenameBook(book.id)} className="text-blue-600 text-xs px-1">✓</button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between">
+                      <div className="min-w-0 flex-1">
+                        <p className={`text-xs font-semibold truncate ${selectedBookId === book.id ? "text-blue-700" : "text-gray-800"}`}>{book.title}</p>
+                        <p className="text-[10px] text-gray-400 mt-0.5">
+                          {book.chapters.length}章 ・ {book.chapters.reduce((s, c) => s + c.pages.length, 0)}ページ
+                        </p>
+                      </div>
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 shrink-0 ml-1" onClick={(e) => e.stopPropagation()}>
+                        <button onClick={() => { setRenamingBookId(book.id); setRenameBookTitle(book.title); }} className="text-gray-300 hover:text-blue-400 text-xs">✏️</button>
+                        {deletingBookId === book.id ? (
+                          <button onClick={() => handleDeleteBook(book.id)} className="text-[10px] bg-red-500 text-white px-1.5 py-0.5 rounded-full">確認</button>
+                        ) : (
+                          <button onClick={(e) => { e.stopPropagation(); handleDeleteBook(book.id); }} className="text-gray-300 hover:text-red-400 text-xs">🗑️</button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </aside>
 
       {/* ===== MAIN CONTENT ===== */}
@@ -686,52 +748,6 @@ export default function Home() {
               </>
             ) : (
             <>
-            {bookSearchActive && bookSearch.trim() ? (
-              /* ===== SEARCH RESULTS VIEW ===== */
-              <>
-                <p className="text-xs text-gray-500 mb-3">
-                  {bookSearchData ? `${bookSearchData.total}件ヒット` : "0件"}
-                </p>
-                {bookSearchData && bookSearchData.results.length > 0 ? (
-                  selectedBook.chapters.map((chapter) => {
-                    const chapterResults = bookSearchData.results.filter((r) => r.chapterId === chapter.id);
-                    if (chapterResults.length === 0) return null;
-                    const hitCount = bookSearchData.chapterCounts[chapter.id] ?? 0;
-                    return (
-                      <div key={chapter.id} className="bg-white rounded-2xl shadow-sm mb-3 overflow-hidden">
-                        <div className="px-4 py-3 bg-pink-50 flex items-center justify-between">
-                          <p className="font-bold text-sm text-gray-800">{chapter.name}</p>
-                          <span className="text-xs font-bold bg-yellow-200 text-yellow-800 rounded-full px-2 py-0.5">{hitCount}件</span>
-                        </div>
-                        <div className="divide-y divide-gray-50">
-                          {chapterResults.map((r) => (
-                            <div
-                              key={r.pageId}
-                              onClick={() => {
-                                const ch = selectedBook.chapters.find((c) => c.id === r.chapterId)!;
-                                openEditView(ch);
-                                setSelectedPageId(r.pageId);
-                                setMobilePanel("text");
-                              }}
-                              className="px-4 py-2.5 cursor-pointer hover:bg-blue-50 active:scale-[0.99]"
-                            >
-                              <p className="text-xs font-semibold text-blue-600 mb-0.5">ページ {r.pageNumber}</p>
-                              <p className="text-xs text-gray-600 leading-relaxed">
-                                ...{renderHighlighted(r.snippet, bookSearch, -1, 0)}...
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <p className="text-sm text-gray-400 text-center mt-8">「{bookSearch}」に一致するページがありません</p>
-                )}
-              </>
-            ) : (
-              /* ===== NORMAL ACCORDION VIEW ===== */
-              <>
             <p className="text-xs text-gray-400 mb-4">章をタップすると展開・テキストが表示されます</p>
 
             {selectedBook.chapters.map((chapter) => {
@@ -739,6 +755,7 @@ export default function Home() {
               const allDone = chapter.pages.length > 0 && chapter.pages.every((p) => p.status === "done");
               const processing = chapter.pages.filter((p) => p.status === "processing").length;
               const errors = chapter.pages.filter((p) => p.status === "error").length;
+              const chapterHits = bookSearchActive && bookSearchData ? (bookSearchData.chapterCounts[chapter.id] ?? 0) : 0;
 
               return (
                 <div key={chapter.id} className="bg-white rounded-2xl shadow-sm mb-3 overflow-hidden group">
@@ -773,6 +790,9 @@ export default function Home() {
                       )}
                     </div>
                     <div className="flex items-center gap-2 ml-2">
+                      {chapterHits > 0 && (
+                        <span className="text-[10px] font-bold bg-yellow-200 text-yellow-800 rounded-full px-1.5 py-0.5">{chapterHits}件</span>
+                      )}
                       <button
                         onClick={(e) => { e.stopPropagation(); setRenamingChapterId(chapter.id); setRenameChapterName(chapter.name); }}
                         className="text-gray-300 hover:text-blue-400 text-xs opacity-0 group-hover:opacity-100"
@@ -840,8 +860,6 @@ export default function Home() {
                 </div>
                 <p className="text-xs text-gray-400 mt-1.5">💡 「あとがき」など数字なしの名前も自由に入力できます</p>
               </div>
-            )}
-              </>
             )}
             </>
             )}
