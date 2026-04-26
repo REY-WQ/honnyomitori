@@ -7,6 +7,7 @@ import {
   getBooks, addBook, deleteBook, renameBook, updateBookSettings,
   addChapter, renameChapter, deleteChapter,
   addPages, updatePage, deletePage, deletePages,
+  reorderChapters, reorderPages,
   nextChapterName,
 } from "@/lib/storage";
 import { compressImage } from "@/lib/compress";
@@ -66,6 +67,11 @@ export default function Home() {
 
   // Settings
   const [showSettings, setShowSettings] = useState(false);
+
+  // Reorder modes
+  const [sortingPages, setSortingPages] = useState<Page[] | null>(null);
+  const [sortingChapters, setSortingChapters] = useState<Chapter[] | null>(null);
+  const dragIndexRef = useRef<number | null>(null);
 
   const selectedBook = books.find((b) => b.id === selectedBookId) ?? null;
   const editChapter = selectedBook?.chapters.find((c) => c.id === editChapterId) ?? null;
@@ -335,6 +341,31 @@ export default function Home() {
     setEditingPageId(null);
   }
 
+  // ===== REORDER HELPERS =====
+
+  function moveSortItem<T>(list: T[], from: number, to: number): T[] {
+    const next = [...list];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    return next;
+  }
+
+  async function handleSavePageOrder() {
+    if (!sortingPages || !editChapterId) return;
+    const updates = sortingPages.map((p, i) => ({ id: p.id, pageNumber: i + 1 }));
+    await reorderPages(updates);
+    setSortingPages(null);
+    reload();
+  }
+
+  async function handleSaveChapterOrder() {
+    if (!sortingChapters) return;
+    const updates = sortingChapters.map((c, i) => ({ id: c.id, orderIndex: i }));
+    await reorderChapters(updates);
+    setSortingChapters(null);
+    reload();
+  }
+
   // ===== RENDER =====
 
   return (
@@ -432,10 +463,52 @@ export default function Home() {
               <button onClick={() => setShowSidebar(true)} className="md:hidden bg-gray-100 rounded-lg px-2.5 py-1.5 text-sm text-gray-600 active:scale-95">☰</button>
               <h1 className="text-base font-bold text-gray-800 truncate">{selectedBook.title}</h1>
             </div>
-            <button onClick={() => setShowSettings(true)} className="text-sm bg-gray-100 rounded-lg px-3 py-1.5 text-gray-600 active:scale-95 transition-transform shrink-0">⚙️ 設定</button>
+            <div className="flex items-center gap-2">
+              {sortingChapters !== null ? (
+                <>
+                  <button onClick={handleSaveChapterOrder} className="text-sm bg-green-600 text-white rounded-lg px-3 py-1.5 font-semibold active:scale-95 transition-transform">✓ 完了</button>
+                  <button onClick={() => setSortingChapters(null)} className="text-sm bg-gray-100 text-gray-600 rounded-lg px-2.5 py-1.5 active:scale-95 transition-transform">✕</button>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => setSortingChapters([...selectedBook.chapters])} disabled={selectedBook.chapters.length < 2} className="text-sm bg-gray-100 rounded-lg px-2.5 py-1.5 text-gray-600 active:scale-95 transition-transform disabled:opacity-30">⇅</button>
+                  <button onClick={() => setShowSettings(true)} className="text-sm bg-gray-100 rounded-lg px-3 py-1.5 text-gray-600 active:scale-95 transition-transform shrink-0">⚙️ 設定</button>
+                </>
+              )}
+            </div>
           </header>
 
           <div className="flex-1 overflow-y-auto p-5">
+            {sortingChapters !== null ? (
+              <>
+                <p className="text-xs text-amber-700 bg-amber-50 rounded-xl px-3 py-2 mb-3">⇅ ≡ をドラッグ、または ↑↓ で章の順序を変更。「完了」で保存。</p>
+                {sortingChapters.map((chapter, index) => (
+                  <div
+                    key={chapter.id}
+                    draggable
+                    onDragStart={() => { dragIndexRef.current = index; }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (dragIndexRef.current === null || dragIndexRef.current === index) { dragIndexRef.current = null; return; }
+                      setSortingChapters(moveSortItem(sortingChapters, dragIndexRef.current, index));
+                      dragIndexRef.current = null;
+                    }}
+                    className="bg-white rounded-2xl shadow-sm mb-2 flex items-center gap-3 px-4 py-3.5 cursor-grab active:cursor-grabbing border border-gray-100"
+                  >
+                    <span className="text-gray-300 text-xl select-none">⠿</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-sm text-gray-800">{chapter.name}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">{chapter.pages.length}ページ</p>
+                    </div>
+                    <div className="flex flex-col">
+                      <button onClick={() => { if (index > 0) setSortingChapters(moveSortItem(sortingChapters, index, index - 1)); }} disabled={index === 0} className="text-xs text-gray-400 hover:text-gray-700 disabled:opacity-20 leading-none py-0.5 px-1">↑</button>
+                      <button onClick={() => { if (index < sortingChapters.length - 1) setSortingChapters(moveSortItem(sortingChapters, index, index + 1)); }} disabled={index === sortingChapters.length - 1} className="text-xs text-gray-400 hover:text-gray-700 disabled:opacity-20 leading-none py-0.5 px-1">↓</button>
+                    </div>
+                  </div>
+                ))}
+              </>
+            ) : (
+            <>
             <p className="text-xs text-gray-400 mb-4">章をタップすると展開・テキストが表示されます</p>
 
             {selectedBook.chapters.map((chapter) => {
@@ -538,6 +611,8 @@ export default function Home() {
                 <p className="text-xs text-gray-400 mt-1.5">💡 「あとがき」など数字なしの名前も自由に入力できます</p>
               </div>
             )}
+            </>
+            )}
           </div>
         </div>
       ) : (
@@ -570,13 +645,26 @@ export default function Home() {
                 </div>
               )}
 
-              {!selectMode ? (
+              {sortingPages !== null ? (
+                <div className="flex gap-2">
+                  <button onClick={handleSavePageOrder} className="flex-1 bg-green-600 text-white text-xs font-semibold rounded-xl py-2 active:scale-95 transition-transform">✓ 完了</button>
+                  <button onClick={() => setSortingPages(null)} className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 py-2 active:scale-95 transition-transform">✕</button>
+                </div>
+              ) : !selectMode ? (
                 <>
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading}
-                    className="w-full bg-blue-600 text-white text-xs font-semibold rounded-xl py-2 mb-2 active:scale-95 transition-transform disabled:opacity-50"
-                  >📷 写真を挿入</button>
+                  <div className="flex gap-2 mb-2">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploading}
+                      className="flex-1 bg-blue-600 text-white text-xs font-semibold rounded-xl py-2 active:scale-95 transition-transform disabled:opacity-50"
+                    >📷 写真を挿入</button>
+                    <button
+                      onClick={() => setSortingPages([...(editChapter?.pages ?? [])])}
+                      disabled={uploading || (editChapter?.pages.length ?? 0) === 0}
+                      className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 active:scale-95 transition-transform disabled:opacity-30"
+                      title="ページを並び替え"
+                    >⇅</button>
+                  </div>
                   <button
                     onClick={() => setSelectMode(true)}
                     disabled={uploading || (editChapter?.pages.length ?? 0) === 0}
@@ -612,63 +700,93 @@ export default function Home() {
               className="flex-1 overflow-y-auto p-1.5"
               onTouchStart={() => { isDraggingRef.current = false; }}
             >
-              {editChapter?.pages.map((page) => (
-                <div
-                  key={page.id}
-                  data-page-id={page.id}
-                  onMouseDown={() => {
-                    if (!selectMode) return;
-                    isMouseDownRef.current = true;
-                    mouseDownPageIdRef.current = page.id;
-                    didMouseDragRef.current = false;
-                  }}
-                  onMouseEnter={() => {
-                    if (!selectMode || !isMouseDownRef.current) return;
-                    if (!didMouseDragRef.current && mouseDownPageIdRef.current) {
-                      setDeletingPageIds((prev) => { const n = new Set(prev); n.add(mouseDownPageIdRef.current!); return n; });
-                      didMouseDragRef.current = true;
-                    }
-                    setDeletingPageIds((prev) => { const n = new Set(prev); n.add(page.id); return n; });
-                  }}
-                  onClick={() => {
-                    if (selectMode) {
-                      if (!didMouseDragRef.current && !isDraggingRef.current) {
-                        togglePageSelect(page.id);
-                      }
-                      didMouseDragRef.current = false;
-                      isDraggingRef.current = false;
-                      mouseDownPageIdRef.current = null;
-                      return;
-                    }
-                    setSelectedPageId(page.id);
-                    setMobilePanel("text");
-                    setEditingPageId(null);
-                  }}
-                  className={`flex items-center gap-2 px-2 py-2.5 rounded-xl cursor-pointer mb-0.5 select-none ${
-                    selectMode && deletingPageIds.has(page.id) ? "bg-red-50" :
-                    !selectMode && selectedPageId === page.id ? "bg-blue-50" : "hover:bg-gray-50"
-                  }`}
-                >
-                  {selectMode && (
-                    <div className={`w-6 h-6 rounded-full border-2 shrink-0 flex items-center justify-center ${deletingPageIds.has(page.id) ? "bg-red-500 border-red-500" : "border-gray-300"}`}>
-                      {deletingPageIds.has(page.id) && <span className="text-white text-xs font-bold">✓</span>}
+              {sortingPages !== null ? (
+                sortingPages.map((page, index) => (
+                  <div
+                    key={page.id}
+                    draggable
+                    onDragStart={() => { dragIndexRef.current = index; }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (dragIndexRef.current === null || dragIndexRef.current === index) { dragIndexRef.current = null; return; }
+                      setSortingPages(moveSortItem(sortingPages, dragIndexRef.current, index));
+                      dragIndexRef.current = null;
+                    }}
+                    className="flex items-center gap-2 px-2 py-2.5 rounded-xl mb-0.5 bg-white border border-gray-200 cursor-grab active:cursor-grabbing select-none"
+                  >
+                    <span className="text-gray-300 text-xl">⠿</span>
+                    <div className="w-9 h-9 bg-gray-100 rounded-lg shrink-0 flex items-center justify-center text-sm text-gray-400">🖼</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-gray-700">ページ {index + 1}</p>
+                      <p className={`text-xs ${page.status === "done" ? "text-green-600" : "text-gray-400"}`}>
+                        {page.status === "done" ? `✓ ${page.text.length}文字` : page.status === "error" ? "✕ エラー" : "—"}
+                      </p>
                     </div>
-                  )}
-                  <div className="w-9 h-9 bg-gray-100 rounded-lg shrink-0 flex items-center justify-center text-sm text-gray-400">🖼</div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-700">ページ {page.pageNumber}</p>
-                    <p className={`text-xs ${page.status === "done" ? "text-green-600" : page.status === "processing" ? "text-blue-500" : page.status === "error" ? "text-red-400" : "text-gray-400"}`}>
-                      {page.status === "done" ? `✓ ${page.text.length}文字` : page.status === "processing" ? "⟳ 処理中" : page.status === "error" ? "✕ エラー" : "⏳ 待機中"}
-                    </p>
+                    <div className="flex flex-col">
+                      <button onClick={() => { if (index > 0) setSortingPages(moveSortItem(sortingPages, index, index - 1)); }} disabled={index === 0} className="text-xs text-gray-400 hover:text-gray-700 disabled:opacity-20 leading-none py-0.5 px-1">↑</button>
+                      <button onClick={() => { if (index < sortingPages.length - 1) setSortingPages(moveSortItem(sortingPages, index, index + 1)); }} disabled={index === sortingPages.length - 1} className="text-xs text-gray-400 hover:text-gray-700 disabled:opacity-20 leading-none py-0.5 px-1">↓</button>
+                    </div>
                   </div>
-                  {!selectMode && page.status === "error" && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleRetryPage(page); }}
-                      className="text-xs bg-red-50 text-red-400 border border-red-200 rounded-lg px-2 py-1 shrink-0"
-                    >🔄</button>
-                  )}
-                </div>
-              ))}
+                ))
+              ) : (
+                editChapter?.pages.map((page) => (
+                  <div
+                    key={page.id}
+                    data-page-id={page.id}
+                    onMouseDown={() => {
+                      if (!selectMode) return;
+                      isMouseDownRef.current = true;
+                      mouseDownPageIdRef.current = page.id;
+                      didMouseDragRef.current = false;
+                    }}
+                    onMouseEnter={() => {
+                      if (!selectMode || !isMouseDownRef.current) return;
+                      if (!didMouseDragRef.current && mouseDownPageIdRef.current) {
+                        setDeletingPageIds((prev) => { const n = new Set(prev); n.add(mouseDownPageIdRef.current!); return n; });
+                        didMouseDragRef.current = true;
+                      }
+                      setDeletingPageIds((prev) => { const n = new Set(prev); n.add(page.id); return n; });
+                    }}
+                    onClick={() => {
+                      if (selectMode) {
+                        if (!didMouseDragRef.current && !isDraggingRef.current) {
+                          togglePageSelect(page.id);
+                        }
+                        didMouseDragRef.current = false;
+                        isDraggingRef.current = false;
+                        mouseDownPageIdRef.current = null;
+                        return;
+                      }
+                      setSelectedPageId(page.id);
+                      setMobilePanel("text");
+                      setEditingPageId(null);
+                    }}
+                    className={`flex items-center gap-2 px-2 py-2.5 rounded-xl cursor-pointer mb-0.5 select-none ${
+                      selectMode && deletingPageIds.has(page.id) ? "bg-red-50" :
+                      !selectMode && selectedPageId === page.id ? "bg-blue-50" : "hover:bg-gray-50"
+                    }`}
+                  >
+                    {selectMode && (
+                      <div className={`w-6 h-6 rounded-full border-2 shrink-0 flex items-center justify-center ${deletingPageIds.has(page.id) ? "bg-red-500 border-red-500" : "border-gray-300"}`}>
+                        {deletingPageIds.has(page.id) && <span className="text-white text-xs font-bold">✓</span>}
+                      </div>
+                    )}
+                    <div className="w-9 h-9 bg-gray-100 rounded-lg shrink-0 flex items-center justify-center text-sm text-gray-400">🖼</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-gray-700">ページ {page.pageNumber}</p>
+                      <p className={`text-xs ${page.status === "done" ? "text-green-600" : page.status === "processing" ? "text-blue-500" : page.status === "error" ? "text-red-400" : "text-gray-400"}`}>
+                        {page.status === "done" ? `✓ ${page.text.length}文字` : page.status === "processing" ? "⟳ 処理中" : page.status === "error" ? "✕ エラー" : "⏳ 待機中"}
+                      </p>
+                    </div>
+                    {!selectMode && page.status === "error" && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleRetryPage(page); }}
+                        className="text-xs bg-red-50 text-red-400 border border-red-200 rounded-lg px-2 py-1 shrink-0"
+                      >🔄</button>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
 
             {/* Chapter navigation */}

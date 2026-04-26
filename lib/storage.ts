@@ -161,6 +161,24 @@ export async function deletePages(ids: string[]): Promise<void> {
   await supabase.from("pages").delete().in("id", ids);
 }
 
+export async function reorderChapters(updates: { id: string; orderIndex: number }[]): Promise<void> {
+  const supabase = getSupabase();
+  await Promise.all(
+    updates.map(({ id, orderIndex }) =>
+      supabase.from("chapters").update({ order_index: orderIndex }).eq("id", id)
+    )
+  );
+}
+
+export async function reorderPages(updates: { id: string; pageNumber: number }[]): Promise<void> {
+  const supabase = getSupabase();
+  await Promise.all(
+    updates.map(({ id, pageNumber }) =>
+      supabase.from("pages").update({ page_number: pageNumber }).eq("id", id)
+    )
+  );
+}
+
 // Smart chapter name: find max number in existing chapter names and return next
 export function nextChapterName(chapters: Chapter[]): string {
   const numbers = chapters
