@@ -156,6 +156,30 @@ export default function Home() {
   useEffect(() => { setChapterSearchMatchIdx(0); }, [chapterSearch]);
   useEffect(() => { setBookSearchMatchIdx(0); }, [bookSearch]);
 
+  // Auto-expand first matching chapter when book search activates
+  useEffect(() => {
+    if (!bookSearchActive || !bookSearchData || bookSearchData.total === 0 || !selectedBook) return;
+    for (const chapter of selectedBook.chapters) {
+      if ((bookSearchData.chapterCounts[chapter.id] ?? 0) > 0) {
+        setOpenChapterIds((prev) => { const n = new Set(prev); n.add(chapter.id); return n; });
+        break;
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookSearchActive]);
+
+  // Auto-navigate to first matching page when chapter search activates
+  useEffect(() => {
+    if (!chapterSearchActive || !chapterSearchData || chapterSearchData.totalMatches === 0) return;
+    const pm = chapterSearchData.pageMatches.find((m) => m.count > 0);
+    if (pm && pm.pageId !== selectedPageId) {
+      setSelectedPageId(pm.pageId);
+      setMobilePanel("text");
+      setEditingPageId(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chapterSearchActive]);
+
   // Reset chapter search when switching chapters (carry over from book search if set)
   useEffect(() => {
     if (carryOverSearchRef.current !== null) {
@@ -735,7 +759,7 @@ export default function Home() {
                 </>
               ) : (
                 <>
-                  <form onSubmit={(e) => { e.preventDefault(); if (bookSearch.trim()) setBookSearchActive(true); }} className="flex items-center gap-1">
+                  <form onSubmit={(e) => { e.preventDefault(); if (!bookSearch.trim()) return; if (bookSearchActive) navigateBookSearch("next"); else setBookSearchActive(true); }} className="flex items-center gap-1">
                     <input
                       value={bookSearch}
                       onChange={(e) => setBookSearch(e.target.value)}
@@ -1166,7 +1190,7 @@ export default function Home() {
                   >ページ {selectedPage?.pageNumber ?? "—"}</span>
                 )}
                 <button onClick={() => navigatePage("next")} disabled={!selectedPageId || editChapter?.pages.at(-1)?.id === selectedPageId} className="bg-gray-100 rounded-lg px-2.5 py-1 text-sm disabled:opacity-30 active:scale-95 transition-transform">→</button>
-                <form onSubmit={(e) => { e.preventDefault(); if (chapterSearch.trim()) { setChapterSearchActive(true); setChapterSearchMatchIdx(0); } }} className="flex items-center gap-1 ml-1">
+                <form onSubmit={(e) => { e.preventDefault(); if (!chapterSearch.trim()) return; if (chapterSearchActive) navigateChapterSearch("next"); else { setChapterSearchActive(true); setChapterSearchMatchIdx(0); } }} className="flex items-center gap-1 ml-1">
                   <input
                     value={chapterSearch}
                     onChange={(e) => setChapterSearch(e.target.value)}
