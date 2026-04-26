@@ -156,12 +156,13 @@ export default function Home() {
   useEffect(() => { setChapterSearchMatchIdx(0); }, [chapterSearch]);
   useEffect(() => { setBookSearchMatchIdx(0); }, [bookSearch]);
 
-  // Scroll current match into view whenever match index changes
+  // Scroll current match into view (setTimeout gives React time to re-render expanded chapter/page first)
   useEffect(() => {
-    requestAnimationFrame(() => {
+    const timer = setTimeout(() => {
       document.querySelector("mark.bg-orange-400")?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-  }, [bookSearchMatchIdx, chapterSearchMatchIdx]);
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [bookSearchMatchIdx, chapterSearchMatchIdx, bookSearchActive, chapterSearchActive]);
 
   // Auto-expand first matching chapter when book search activates
   useEffect(() => {
