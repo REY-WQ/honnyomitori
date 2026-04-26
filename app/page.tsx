@@ -73,6 +73,9 @@ export default function Home() {
   const [sortingChapters, setSortingChapters] = useState<Chapter[] | null>(null);
   const dragIndexRef = useRef<number | null>(null);
   const carryOverSearchRef = useRef<string | null>(null);
+  const chapterSearchInputRef = useRef<HTMLInputElement>(null);
+  const navigateChapterSearchRef = useRef<(dir: "prev" | "next") => void>(() => {});
+  const chapterSearchActiveRef = useRef(false);
 
   // Page number inline edit
   const [editingPageNum, setEditingPageNum] = useState(false);
@@ -89,6 +92,9 @@ export default function Home() {
   const selectedBook = books.find((b) => b.id === selectedBookId) ?? null;
   const editChapter = selectedBook?.chapters.find((c) => c.id === editChapterId) ?? null;
   const selectedPage = editChapter?.pages.find((p) => p.id === selectedPageId) ?? null;
+
+  // Keep refs up-to-date every render so global handlers never have stale closures
+  chapterSearchActiveRef.current = chapterSearchActive;
 
   const reload = useCallback(async () => {
     try {
@@ -163,6 +169,21 @@ export default function Home() {
     }, 80);
     return () => clearTimeout(timer);
   }, [bookSearchMatchIdx, chapterSearchMatchIdx, bookSearchActive, chapterSearchActive]);
+
+  // Global Enter key → navigate chapter search
+  // Uses refs so this handler never goes stale — registered once per Screen 3 visit
+  useEffect(() => {
+    if (view !== "edit") return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Enter") return;
+      if (!chapterSearchActiveRef.current) return;
+      if ((e.target as HTMLElement).tagName === "TEXTAREA") return;
+      e.preventDefault();
+      navigateChapterSearchRef.current("next");
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [view]);
 
   // Auto-expand first matching chapter when book search activates
   useEffect(() => {
@@ -566,6 +587,7 @@ export default function Home() {
     return <>{parts}</>;
   }
 
+  navigateChapterSearchRef.current = navigateChapterSearch;
   function navigateChapterSearch(dir: "prev" | "next") {
     if (!chapterSearchData || chapterSearchData.totalMatches === 0) return;
     const total = chapterSearchData.totalMatches;
@@ -581,6 +603,7 @@ export default function Home() {
     }
     setTimeout(() => {
       document.querySelector("[data-search-current='true']")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      chapterSearchInputRef.current?.focus();
     }, 120);
   }
 
@@ -1120,6 +1143,9 @@ export default function Home() {
                       setSelectedPageId(page.id);
                       setMobilePanel("text");
                       setEditingPageId(null);
+                      if (chapterSearchActive) {
+                        setTimeout(() => { chapterSearchInputRef.current?.focus(); }, 50);
+                      }
                     }}
                     className={`flex items-center gap-2 px-2 py-2.5 rounded-xl cursor-pointer mb-0.5 select-none ${
                       selectMode && deletingPageIds.has(page.id) ? "bg-red-50" :
@@ -1216,6 +1242,7 @@ export default function Home() {
                 <button onClick={() => navigatePage("next")} disabled={!selectedPageId || editChapter?.pages.at(-1)?.id === selectedPageId} className="bg-gray-100 rounded-lg px-2.5 py-1 text-sm disabled:opacity-30 active:scale-95 transition-transform">→</button>
                 <form onSubmit={(e) => { e.preventDefault(); if (!chapterSearch.trim()) return; if (chapterSearchActive) navigateChapterSearch("next"); else { setChapterSearchActive(true); setChapterSearchMatchIdx(0); } }} className="flex items-center gap-1 ml-1">
                   <input
+                    ref={chapterSearchInputRef}
                     value={chapterSearch}
                     onChange={(e) => setChapterSearch(e.target.value)}
                     onKeyDown={(e) => {
@@ -1234,6 +1261,7 @@ export default function Home() {
                           }
                           setChapterSearchActive(true);
                           setChapterSearchMatchIdx(0);
+                          setTimeout(() => { chapterSearchInputRef.current?.focus(); }, 150);
                         }
                       }
                     }}
