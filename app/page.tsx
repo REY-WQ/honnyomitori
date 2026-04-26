@@ -156,6 +156,13 @@ export default function Home() {
   useEffect(() => { setChapterSearchMatchIdx(0); }, [chapterSearch]);
   useEffect(() => { setBookSearchMatchIdx(0); }, [bookSearch]);
 
+  // Scroll current match into view whenever match index changes
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      document.querySelector("mark.bg-orange-400")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [bookSearchMatchIdx, chapterSearchMatchIdx]);
+
   // Auto-expand first matching chapter when book search activates
   useEffect(() => {
     if (!bookSearchActive || !bookSearchData || bookSearchData.total === 0 || !selectedBook) return;
