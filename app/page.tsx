@@ -219,6 +219,34 @@ export default function Home() {
 
   // ===== PAGE ACTIONS =====
 
+  function joinPageTexts(pages: Page[]): string {
+    const SENT_END     = /[。！？…」』）]$/;
+    const CHAPTER_HEAD = /^第[一二三四五六七八九十百千万\d]+[章節部]/;
+    const SEPARATOR    = /^[\*\-─━=＝]{2,}$/;
+
+    const combined = pages
+      .filter((p) => p.status === "done")
+      .map((p) => p.text)
+      .join("\n");
+
+    const lines = combined.split("\n").filter((l) => l.trim());
+    const out: string[] = [];
+    let buffer = "";
+
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (!t) continue;
+      buffer = buffer ? buffer + t : t;
+      const keep = SENT_END.test(t) || CHAPTER_HEAD.test(t) || SEPARATOR.test(t);
+      if (keep || i === lines.length - 1) {
+        out.push(buffer);
+        buffer = "";
+      }
+    }
+    if (buffer) out.push(buffer);
+    return out.join("\n");
+  }
+
   function cleanOcrText(raw: string): string {
     const SENT_END     = /[。！？…」』）]$/;
     const CHAPTER_HEAD = /^第[一二三四五六七八九十百千万\d]+[章節部]/;
@@ -601,7 +629,7 @@ export default function Home() {
                             className="w-full mb-3 bg-blue-50 text-blue-600 border border-blue-200 rounded-xl py-2.5 text-sm font-medium active:scale-95 transition-transform"
                           >編集する場合はこちらのボタンをタップしてください</button>
                           <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap break-all">
-                            {chapter.pages.filter((p) => p.status === "done").map((p) => p.text).join("\n\n")}
+                            {joinPageTexts(chapter.pages)}
                           </p>
                         </>
                       )}
