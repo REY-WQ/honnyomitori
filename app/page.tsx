@@ -73,6 +73,10 @@ export default function Home() {
   const [sortingChapters, setSortingChapters] = useState<Chapter[] | null>(null);
   const dragIndexRef = useRef<number | null>(null);
 
+  // Page number inline edit
+  const [editingPageNum, setEditingPageNum] = useState(false);
+  const [editingPageNumValue, setEditingPageNumValue] = useState("");
+
   const selectedBook = books.find((b) => b.id === selectedBookId) ?? null;
   const editChapter = selectedBook?.chapters.find((c) => c.id === editChapterId) ?? null;
   const selectedPage = editChapter?.pages.find((p) => p.id === selectedPageId) ?? null;
@@ -288,7 +292,11 @@ export default function Home() {
     setUploading(true);
 
     const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
-    const startNum = (chapter?.pages.length ?? 0) + 1;
+    const allPagesInBook = selectedBook?.chapters.flatMap((c) => c.pages) ?? [];
+    const maxBookPageNum = allPagesInBook.length > 0 ? Math.max(...allPagesInBook.map((p) => p.pageNumber)) : 0;
+    const startNum = chapter && chapter.pages.length > 0
+      ? Math.max(...chapter.pages.map((p) => p.pageNumber)) + 1
+      : maxBookPageNum + 1;
 
     const newPages: Page[] = arr.map((_, i) => ({
       id: uuidv4(),
@@ -408,6 +416,15 @@ export default function Home() {
     const updates = sortingPages.map((p, i) => ({ id: p.id, pageNumber: i + 1 }));
     await reorderPages(updates);
     setSortingPages(null);
+    reload();
+  }
+
+  async function handleChangePageNumber(newNum: number) {
+    if (!selectedPage || !editChapter) return;
+    const offset = newNum - selectedPage.pageNumber;
+    if (offset === 0) return;
+    const updates = editChapter.pages.map((p) => ({ id: p.id, pageNumber: p.pageNumber + offset }));
+    await reorderPages(updates);
     reload();
   }
 
@@ -607,6 +624,13 @@ export default function Home() {
                         onClick={(e) => { e.stopPropagation(); setRenamingChapterId(chapter.id); setRenameChapterName(chapter.name); }}
                         className="text-gray-300 hover:text-blue-400 text-xs opacity-0 group-hover:opacity-100"
                       >✏️</button>
+                      {isOpen && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(joinPageTexts(chapter.pages)); }}
+                          className="text-xs text-gray-400 hover:text-blue-500 px-1.5 py-1 bg-gray-50 rounded-lg"
+                          title="テキストをコピー"
+                        >📋</button>
+                      )}
                       <span className={isOpen ? "text-yellow-700" : "text-pink-700"}>{isOpen ? "▲" : "▼"}</span>
                     </div>
                   </div>
@@ -880,7 +904,26 @@ export default function Home() {
               <div className="flex items-center gap-1.5">
                 <button onClick={() => setMobilePanel("list")} className="md:hidden bg-gray-100 rounded-lg px-2.5 py-1 text-sm text-gray-600 active:scale-95 shrink-0">←</button>
                 <button onClick={() => navigatePage("prev")} disabled={!selectedPageId || editChapter?.pages[0]?.id === selectedPageId} className="bg-gray-100 rounded-lg px-2.5 py-1 text-sm disabled:opacity-30 active:scale-95 transition-transform">←</button>
-                <span className="text-sm font-semibold text-gray-700 whitespace-nowrap">ページ {selectedPage?.pageNumber ?? "—"}</span>
+                {editingPageNum && selectedPage ? (
+                  <input
+                    autoFocus
+                    type="number"
+                    value={editingPageNumValue}
+                    onChange={(e) => setEditingPageNumValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") { const n = parseInt(editingPageNumValue); if (!isNaN(n) && n > 0) handleChangePageNumber(n); setEditingPageNum(false); }
+                      if (e.key === "Escape") setEditingPageNum(false);
+                    }}
+                    onBlur={() => { const n = parseInt(editingPageNumValue); if (!isNaN(n) && n > 0) handleChangePageNumber(n); setEditingPageNum(false); }}
+                    className="w-14 text-center border border-blue-300 rounded-lg px-1 py-0.5 text-sm font-semibold outline-none"
+                  />
+                ) : (
+                  <span
+                    onClick={() => { if (selectedPage) { setEditingPageNumValue(String(selectedPage.pageNumber)); setEditingPageNum(true); } }}
+                    className="text-sm font-semibold text-gray-700 whitespace-nowrap cursor-pointer hover:text-blue-600"
+                    title="タップしてページ番号を変更"
+                  >ページ {selectedPage?.pageNumber ?? "—"}</span>
+                )}
                 <button onClick={() => navigatePage("next")} disabled={!selectedPageId || editChapter?.pages.at(-1)?.id === selectedPageId} className="bg-gray-100 rounded-lg px-2.5 py-1 text-sm disabled:opacity-30 active:scale-95 transition-transform">→</button>
               </div>
               <div className="flex items-center gap-1.5">
@@ -896,9 +939,18 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="bg-white rounded-2xl p-4 shadow-sm">
-                  <p className="text-xs text-gray-400 mb-3">
-                    {selectedBook.title} ＞ {editChapter?.name} ＞ ページ {selectedPage.pageNumber}
-                  </p>
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs text-gray-400">
+                      {selectedBook.title} ＞ {editChapter?.name} ＞ ページ {selectedPage.pageNumber}
+                    </p>
+                    {selectedPage.status === "done" && (
+                      <button
+                        onClick={() => navigator.clipboard.writeText(selectedPage.text)}
+                        className="text-xs text-gray-400 hover:text-blue-500 px-1.5 py-1 bg-gray-50 rounded-lg shrink-0 ml-2"
+                        title="テキストをコピー"
+                      >📋</button>
+                    )}
+                  </div>
 
                   {editingPageId === selectedPage.id ? (
                     <>
