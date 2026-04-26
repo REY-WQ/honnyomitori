@@ -579,6 +579,9 @@ export default function Home() {
       setMobilePanel("text");
       setEditingPageId(null);
     }
+    setTimeout(() => {
+      document.querySelector("[data-search-current='true']")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 120);
   }
 
   function navigateBookSearch(dir: "prev" | "next") {
@@ -1219,9 +1222,19 @@ export default function Home() {
                       if (e.key === "Escape") { setChapterSearch(""); setChapterSearchActive(false); setChapterSearchMatchIdx(0); }
                       if (e.key === "Enter") {
                         e.preventDefault();
-                        if (!chapterSearch.trim()) return;
-                        if (chapterSearchActive) navigateChapterSearch("next");
-                        else { setChapterSearchActive(true); setChapterSearchMatchIdx(0); }
+                        if (!chapterSearch.trim() || !editChapter) return;
+                        if (chapterSearchActive) {
+                          navigateChapterSearch("next");
+                        } else {
+                          const q = chapterSearch.toLowerCase();
+                          const firstPage = editChapter.pages.find((p) => p.status === "done" && p.text.toLowerCase().includes(q));
+                          if (firstPage && firstPage.id !== selectedPageId) {
+                            setSelectedPageId(firstPage.id);
+                            setMobilePanel("text");
+                          }
+                          setChapterSearchActive(true);
+                          setChapterSearchMatchIdx(0);
+                        }
                       }
                     }}
                     placeholder="章内検索..."
