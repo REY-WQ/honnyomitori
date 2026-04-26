@@ -220,9 +220,15 @@ export default function Home() {
   // ===== PAGE ACTIONS =====
 
   function cleanOcrText(raw: string): string {
-    return raw
+    const withoutPageNums = raw
       .split("\n")
       .filter((line) => !/^\s*\d+\s*$/.test(line))
+      .join("\n");
+    // Split by paragraph breaks, join wrapped lines within each paragraph
+    return withoutPageNums
+      .split(/\n{2,}/)
+      .map((para) => para.split("\n").join(""))
+      .filter((para) => para.trim().length > 0)
       .join("\n")
       .trim();
   }
@@ -571,13 +577,13 @@ export default function Home() {
                         </div>
                       ) : (
                         <>
-                          <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap break-all line-clamp-6">
-                            {chapter.pages.filter((p) => p.status === "done").map((p) => p.text).join("\n")}
-                          </p>
                           <button
                             onClick={() => openEditView(chapter)}
-                            className="w-full mt-3 bg-blue-50 text-blue-600 border border-blue-200 rounded-xl py-2.5 text-sm font-medium active:scale-95 transition-transform"
+                            className="w-full mb-3 bg-blue-50 text-blue-600 border border-blue-200 rounded-xl py-2.5 text-sm font-medium active:scale-95 transition-transform"
                           >編集する場合はこちらのボタンをタップしてください</button>
+                          <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap break-all">
+                            {chapter.pages.filter((p) => p.status === "done").map((p) => p.text).join("\n\n")}
+                          </p>
                         </>
                       )}
                     </div>
