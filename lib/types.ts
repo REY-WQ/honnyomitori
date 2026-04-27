@@ -17,10 +17,12 @@ export interface Chapter {
 
 export interface BookSettings {
   chapterNavMode: "buttons" | "dropdown";
+  removeBleedThrough: boolean;
 }
 
 export const DEFAULT_BOOK_SETTINGS: BookSettings = {
   chapterNavMode: "buttons",
+  removeBleedThrough: true,
 };
 
 export interface Book {

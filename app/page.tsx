@@ -277,7 +277,7 @@ export default function Home() {
       id: uuidv4(),
       title: newBookTitle.trim(),
       createdAt: new Date().toISOString(),
-      settings: { chapterNavMode: "buttons" },
+      settings: { chapterNavMode: "buttons", removeBleedThrough: true },
     };
     await addBook(book);
     setNewBookTitle("");
@@ -373,6 +373,25 @@ export default function Home() {
     return out.join("\n");
   }
 
+  // 映り込み除去: 句点で終わらない文が、後に出てくる長い文の先頭と一致する場合は削除
+  function removePrefixDuplicates(sentences: string[]): string[] {
+    const result: string[] = [];
+    for (let i = 0; i < sentences.length; i++) {
+      const s = sentences[i].trim();
+      if (!s) continue;
+      // 句点系で終わっていれば完結した文 → 削除しない
+      if (RE_SENT_END.test(s)) { result.push(s); continue; }
+      // 10文字未満は短すぎて判定不能 → 削除しない
+      if (s.length < 10) { result.push(s); continue; }
+      // 後ろのいずれかの文がこの文を先頭に含んでいれば映り込みと判定
+      const isBleedThrough = sentences.slice(i + 1, i + 10).some(
+        (later) => later.trimStart().startsWith(s)
+      );
+      if (!isBleedThrough) result.push(s);
+    }
+    return result;
+  }
+
   function cleanOcrText(raw: string, isFirstPage = true): string {
     const lines = raw.split("\n").filter((line) => {
       const t = line.trim();
@@ -398,7 +417,10 @@ export default function Home() {
       }
     }
     if (buffer) out.push(buffer);
-    return out.join("\n").trim();
+    const cleaned = selectedBook?.settings.removeBleedThrough !== false
+      ? removePrefixDuplicates(out)
+      : out;
+    return cleaned.join("\n").trim();
   }
 
   async function handleUploadPhotos(files: FileList) {
@@ -1485,6 +1507,22 @@ export default function Home() {
                   </div>
                 </div>
               ))}
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">OCR後処理</p>
+              <label className="flex items-center justify-between px-2 py-2 rounded-xl cursor-pointer hover:bg-gray-50">
+                <div>
+                  <p className="text-sm text-gray-700">映り込み除去</p>
+                  <p className="text-xs text-gray-400">隣ページの重複テキストを自動削除</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={selectedBook.settings.removeBleedThrough !== false}
+                  onChange={(e) => handleUpdateSettings({ ...selectedBook.settings, removeBleedThrough: e.target.checked })}
+                  className="accent-blue-600 w-4 h-4"
+                />
+              </label>
             </div>
 
             <div>
