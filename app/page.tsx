@@ -44,6 +44,8 @@ export default function Home() {
   const [processingTotal, setProcessingTotal] = useState(0);
   const [processingDone, setProcessingDone] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const retryFileInputRef = useRef<HTMLInputElement>(null);
+  const retryPageRef = useRef<Page | null>(null);
 
   // New book state
   const [showNewBook, setShowNewBook] = useState(false);
@@ -453,9 +455,30 @@ export default function Home() {
     setProcessingDone(0);
   }
 
-  async function handleRetryPage(page: Page) {
-    if (!selectedBookId) return;
-    await updatePage({ ...page, status: "error" });
+  async function handleRetryPage(page: Page, file: File) {
+    if (!selectedBookId || !editChapterId) return;
+    try {
+      await updatePage({ ...page, status: "processing" });
+      await reload();
+      const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
+      const isFirstPage = chapter?.pages[0]?.id === page.id;
+      const base64 = await compressImage(file);
+      const res = await fetch("/api/ocr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: base64 }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!res.ok) throw new Error(`OCR ${res.status}`);
+      const data = await res.json();
+      if (data.text !== undefined) {
+        await updatePage({ ...page, text: cleanOcrText(data.text, isFirstPage), status: "done", processedAt: new Date().toISOString() });
+      } else {
+        await updatePage({ ...page, status: "error" });
+      }
+    } catch {
+      await updatePage({ ...page, status: "error" });
+    }
     reload();
   }
 
@@ -1117,6 +1140,17 @@ export default function Home() {
                 className="hidden"
                 onChange={(e) => e.target.files && handleUploadPhotos(e.target.files)}
               />
+              <input
+                ref={retryFileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file && retryPageRef.current) handleRetryPage(retryPageRef.current, file);
+                  e.target.value = "";
+                }}
+              />
             </div>
 
             {/* Page list */}
@@ -1219,7 +1253,7 @@ export default function Home() {
                     )}
                     {!selectMode && page.status === "error" && (
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleRetryPage(page); }}
+                        onClick={(e) => { e.stopPropagation(); retryPageRef.current = page; retryFileInputRef.current?.click(); }}
                         className="text-xs bg-red-50 text-red-400 border border-red-200 rounded-lg px-2 py-1 shrink-0"
                       >🔄</button>
                     )}
