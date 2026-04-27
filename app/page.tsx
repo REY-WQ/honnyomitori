@@ -15,6 +15,14 @@ import { getSupabase } from "@/lib/supabase";
 
 type View = "text" | "edit";
 
+// OCRテキスト処理用の共通正規表現
+const RE_SENT_END     = /[。！？…」』）]$/;
+const RE_CHAPTER_HEAD = /^第[一二三四五六七八九十百千万\d]+[章節部]/;
+const RE_SEPARATOR    = /^[\*\-─━=＝]{2,}$/;
+const RE_NOBRE_PRE    = /^\d+\s+第[一二三四五六七八九十百千万\d]+[章節部]/;
+const RE_NOBRE_SUF    = /第[一二三四五六七八九十百千万\d]+[章節部].*\d+$/;
+const RE_PAGE_NUM     = /^\s*\d+\s*$/;
+
 export default function Home() {
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,6 +91,7 @@ export default function Home() {
 
   // Search
   const [bookSearch, setBookSearch] = useState("");
+  const [bookSearchDeferred, setBookSearchDeferred] = useState("");
   const [bookSearchActive, setBookSearchActive] = useState(false);
   const [chapterSearch, setChapterSearch] = useState("");
   const [chapterSearchActive, setChapterSearchActive] = useState(false);
@@ -161,6 +170,12 @@ export default function Home() {
   // Reset chapter search match index when query changes
   useEffect(() => { setChapterSearchMatchIdx(0); }, [chapterSearch]);
   useEffect(() => { setBookSearchMatchIdx(0); }, [bookSearch]);
+
+  // Debounce book search query to avoid recomputing on every keystroke
+  useEffect(() => {
+    const t = setTimeout(() => setBookSearchDeferred(bookSearch), 300);
+    return () => clearTimeout(t);
+  }, [bookSearch]);
 
   // Scroll current match into view (setTimeout gives React time to re-render expanded chapter/page first)
   useEffect(() => {
@@ -305,10 +320,6 @@ export default function Home() {
   // ===== PAGE ACTIONS =====
 
   function joinPageTexts(pages: Page[]): string {
-    const SENT_END     = /[。！？…」』）]$/;
-    const CHAPTER_HEAD = /^第[一二三四五六七八九十百千万\d]+[章節部]/;
-    const SEPARATOR    = /^[\*\-─━=＝]{2,}$/;
-
     const combined = pages
       .filter((p) => p.status === "done")
       .map((p) => p.text)
@@ -322,7 +333,7 @@ export default function Home() {
       const t = lines[i].trim();
       if (!t) continue;
       buffer = buffer ? buffer + t : t;
-      const keep = SENT_END.test(t) || CHAPTER_HEAD.test(t) || SEPARATOR.test(t);
+      const keep = RE_SENT_END.test(t) || RE_CHAPTER_HEAD.test(t) || RE_SEPARATOR.test(t);
       if (keep || i === lines.length - 1) {
         out.push(buffer);
         buffer = "";
@@ -333,19 +344,13 @@ export default function Home() {
   }
 
   function cleanOcrText(raw: string, isFirstPage = true): string {
-    const SENT_END     = /[。！？…」』）]$/;
-    const CHAPTER_HEAD = /^第[一二三四五六七八九十百千万\d]+[章節部]/;
-    const SEPARATOR    = /^[\*\-─━=＝]{2,}$/;
-    const NOBRE_PRE    = /^\d+\s+第[一二三四五六七八九十百千万\d]+[章節部]/;
-    const NOBRE_SUF    = /第[一二三四五六七八九十百千万\d]+[章節部].*\d+$/;
-
     const lines = raw.split("\n").filter((line) => {
       const t = line.trim();
       if (!t) return false;
-      if (/^\s*\d+\s*$/.test(t)) return false;
-      if (NOBRE_PRE.test(t)) return false;
-      if (NOBRE_SUF.test(t)) return false;
-      if (!isFirstPage && CHAPTER_HEAD.test(t)) return false;
+      if (RE_PAGE_NUM.test(t)) return false;
+      if (RE_NOBRE_PRE.test(t)) return false;
+      if (RE_NOBRE_SUF.test(t)) return false;
+      if (!isFirstPage && RE_CHAPTER_HEAD.test(t)) return false;
       return true;
     });
 
@@ -356,7 +361,7 @@ export default function Home() {
       const t = lines[i].trim();
       if (!t) continue;
       buffer = buffer ? buffer + t : t;
-      const keep = SENT_END.test(t) || CHAPTER_HEAD.test(t) || SEPARATOR.test(t);
+      const keep = RE_SENT_END.test(t) || RE_CHAPTER_HEAD.test(t) || RE_SEPARATOR.test(t);
       if (keep || i === lines.length - 1) {
         out.push(buffer);
         buffer = "";
@@ -403,6 +408,7 @@ export default function Home() {
           body: JSON.stringify({ imageBase64: base64 }),
           signal: AbortSignal.timeout(30000),
         });
+        if (!res.ok) throw new Error(`OCR ${res.status}`);
         const data = await res.json();
         if (data.text !== undefined) {
           const isFirstPage = (chapter?.pages.length ?? 0) === 0 && i === 0;
@@ -513,9 +519,22 @@ export default function Home() {
 
   // ===== SEARCH =====
 
+  function resetBookSearch() {
+    setBookSearch("");
+    setBookSearchDeferred("");
+    setBookSearchActive(false);
+    setBookSearchMatchIdx(0);
+  }
+
+  function resetChapterSearch() {
+    setChapterSearch("");
+    setChapterSearchActive(false);
+    setChapterSearchMatchIdx(0);
+  }
+
   const bookSearchData = useMemo(() => {
-    if (!bookSearchActive || !bookSearch.trim() || !selectedBook) return null;
-    const q = bookSearch.toLowerCase();
+    if (!bookSearchActive || !bookSearchDeferred.trim() || !selectedBook) return null;
+    const q = bookSearchDeferred.toLowerCase();
     const results: { chapterId: string; chapterName: string; pageId: string; pageNumber: number; snippet: string }[] = [];
     const chapterCounts: Record<string, number> = {};
     for (const chapter of selectedBook.chapters) {
@@ -536,7 +555,7 @@ export default function Home() {
     }
     const total = Object.values(chapterCounts).reduce((a, b) => a + b, 0);
     return { results, chapterCounts, total };
-  }, [bookSearchActive, bookSearch, selectedBook]);
+  }, [bookSearchActive, bookSearchDeferred, selectedBook]);
 
   const chapterSearchData = useMemo(() => {
     if (!chapterSearchActive || !chapterSearch.trim() || !editChapter) return null;
@@ -651,7 +670,7 @@ export default function Home() {
             <div className="p-3 border-b border-gray-200">
               <div className="flex items-center justify-between mb-1.5">
                 <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">検索結果</p>
-                <button onClick={() => { setBookSearch(""); setBookSearchActive(false); setBookSearchMatchIdx(0); }} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
+                <button onClick={resetBookSearch} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
               </div>
               <div className="flex items-center gap-1">
                 <span className="text-xs text-gray-500 flex-1">
@@ -805,7 +824,7 @@ export default function Home() {
                       value={bookSearch}
                       onChange={(e) => setBookSearch(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Escape") { setBookSearch(""); setBookSearchActive(false); }
+                        if (e.key === "Escape") resetBookSearch();
                         if (e.key === "Enter") {
                           e.preventDefault();
                           if (!bookSearch.trim()) return;
@@ -817,7 +836,7 @@ export default function Home() {
                     />
                     <button type="submit" className="bg-gray-800 text-white text-xs rounded-lg px-2 py-1.5 shrink-0 active:scale-95">🔍</button>
                     {bookSearchActive && (
-                      <button type="button" onClick={() => { setBookSearch(""); setBookSearchActive(false); }} className="text-gray-400 hover:text-gray-600 text-sm leading-none px-0.5">✕</button>
+                      <button type="button" onClick={resetBookSearch} className="text-gray-400 hover:text-gray-600 text-sm leading-none px-0.5">✕</button>
                     )}
                   </form>
                   <button onClick={() => setSortingChapters([...selectedBook.chapters])} disabled={selectedBook.chapters.length < 2} className="text-sm bg-gray-100 rounded-lg px-2.5 py-1.5 text-gray-600 active:scale-95 transition-transform disabled:opacity-30">⇅</button>
@@ -1037,7 +1056,7 @@ export default function Home() {
                   <div className="flex gap-1">
                     <button onClick={() => navigateChapterSearch("prev")} disabled={!chapterSearchData || chapterSearchData.totalMatches === 0} className="flex-1 bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl py-1.5 active:scale-95 transition-transform disabled:opacity-30">↑</button>
                     <button onClick={() => navigateChapterSearch("next")} disabled={!chapterSearchData || chapterSearchData.totalMatches === 0} className="flex-1 bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl py-1.5 active:scale-95 transition-transform disabled:opacity-30">↓</button>
-                    <button onClick={() => { setChapterSearch(""); setChapterSearchActive(false); setChapterSearchMatchIdx(0); }} className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 py-1.5 active:scale-95 transition-transform">✕</button>
+                    <button onClick={resetChapterSearch} className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 py-1.5 active:scale-95 transition-transform">✕</button>
                   </div>
                 </div>
               ) : (
@@ -1247,7 +1266,7 @@ export default function Home() {
                     value={chapterSearch}
                     onChange={(e) => setChapterSearch(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Escape") { setChapterSearch(""); setChapterSearchActive(false); setChapterSearchMatchIdx(0); }
+                      if (e.key === "Escape") resetChapterSearch();
                       if (e.key === "Enter") {
                         e.preventDefault();
                         if (!chapterSearch.trim() || !editChapter) return;
@@ -1271,7 +1290,7 @@ export default function Home() {
                   />
                   <button type="submit" className="bg-gray-800 text-white text-xs rounded-lg px-1.5 py-1 shrink-0 active:scale-95">🔍</button>
                   {chapterSearchActive && (
-                    <button type="button" onClick={() => { setChapterSearch(""); setChapterSearchActive(false); setChapterSearchMatchIdx(0); }} className="text-gray-400 hover:text-gray-600 text-sm leading-none px-0.5">✕</button>
+                    <button type="button" onClick={resetChapterSearch} className="text-gray-400 hover:text-gray-600 text-sm leading-none px-0.5">✕</button>
                   )}
                 </form>
               </div>
