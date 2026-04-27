@@ -69,6 +69,7 @@ export default function Home() {
   const pageListRef = useRef<HTMLDivElement>(null);
   const isMouseDownRef = useRef(false);
   const mouseDownPageIdRef = useRef<string | null>(null);
+  const selectModeRef = useRef(false);
   const didMouseDragRef = useRef(false);
 
   // Mobile layout
@@ -110,6 +111,7 @@ export default function Home() {
   // Keep refs up-to-date every render so global handlers never have stale closures
   chapterSearchActiveRef.current = chapterSearchActive;
   bookSearchActiveRef.current = bookSearchActive;
+  selectModeRef.current = selectMode;
 
   const reload = useCallback(async () => {
     try {
@@ -148,7 +150,7 @@ export default function Home() {
     const el = pageListRef.current;
     if (!el) return;
     const onTouchMove = (e: TouchEvent) => {
-      if (!selectMode) return;
+      if (!selectModeRef.current) return;
       isDraggingRef.current = true;
       e.preventDefault();
       const touch = e.touches[0];
@@ -164,7 +166,7 @@ export default function Home() {
     };
     el.addEventListener("touchmove", onTouchMove, { passive: false });
     return () => el.removeEventListener("touchmove", onTouchMove);
-  }, [selectMode]);
+  }, []);
 
   // Auto-select first page when entering edit view
   useEffect(() => {
