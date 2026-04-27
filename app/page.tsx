@@ -84,6 +84,9 @@ export default function Home() {
   const chapterSearchInputRef = useRef<HTMLInputElement>(null);
   const navigateChapterSearchRef = useRef<(dir: "prev" | "next") => void>(() => {});
   const chapterSearchActiveRef = useRef(false);
+  const bookSearchInputRef = useRef<HTMLInputElement>(null);
+  const navigateBookSearchNextRef = useRef<() => void>(() => {});
+  const bookSearchActiveRef = useRef(false);
 
   // Page number inline edit
   const [editingPageNum, setEditingPageNum] = useState(false);
@@ -104,6 +107,7 @@ export default function Home() {
 
   // Keep refs up-to-date every render so global handlers never have stale closures
   chapterSearchActiveRef.current = chapterSearchActive;
+  bookSearchActiveRef.current = bookSearchActive;
 
   const reload = useCallback(async () => {
     try {
@@ -198,6 +202,28 @@ export default function Home() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+  }, [view]);
+
+  // Global Enter key → navigate book search (Screen 2)
+  useEffect(() => {
+    if (view !== "text") return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Enter") return;
+      if (!bookSearchActiveRef.current) return;
+      if ((e.target as HTMLElement).tagName === "INPUT") return;
+      if ((e.target as HTMLElement).tagName === "TEXTAREA") return;
+      e.preventDefault();
+      navigateBookSearchNextRef.current();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [view]);
+
+  // Re-focus book search input when returning to Screen 2 with active search
+  useEffect(() => {
+    if (view !== "text" || !bookSearchActive) return;
+    setTimeout(() => { bookSearchInputRef.current?.focus(); }, 150);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
 
   // Auto-expand first matching chapter when book search activates
@@ -627,6 +653,7 @@ export default function Home() {
     }, 120);
   }
 
+  navigateBookSearchNextRef.current = () => navigateBookSearch("next");
   function navigateBookSearch(dir: "prev" | "next") {
     if (!bookSearchData || bookSearchData.total === 0 || !selectedBook) return;
     const next = dir === "next"
@@ -821,6 +848,7 @@ export default function Home() {
                 <>
                   <form onSubmit={(e) => { e.preventDefault(); if (!bookSearch.trim()) return; if (bookSearchActive) navigateBookSearch("next"); else setBookSearchActive(true); }} className="flex items-center gap-1">
                     <input
+                      ref={bookSearchInputRef}
                       value={bookSearch}
                       onChange={(e) => setBookSearch(e.target.value)}
                       onKeyDown={(e) => {
