@@ -163,6 +163,16 @@ export default function Home() {
     return () => { supabase.removeChannel(channel); };
   }, [reload]);
 
+  // Poll every 5s while any page is processing (Realtime fallback for mobile)
+  const hasProcessingPages = books.some((b) =>
+    b.chapters.some((c) => c.pages.some((p) => p.status === "processing"))
+  );
+  useEffect(() => {
+    if (!hasProcessingPages) return;
+    const id = setInterval(() => reload(), 5000);
+    return () => clearInterval(id);
+  }, [hasProcessingPages, reload]);
+
   // Global mouseup to end mouse drag-select
   useEffect(() => {
     const onMouseUp = () => { isMouseDownRef.current = false; };
