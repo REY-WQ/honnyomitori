@@ -47,6 +47,7 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const retryFileInputRef = useRef<HTMLInputElement>(null);
   const retryPageRef = useRef<Page | null>(null);
+  const cancelUploadRef = useRef(false);
 
   // New book state
   const [showNewBook, setShowNewBook] = useState(false);
@@ -424,11 +425,16 @@ export default function Home() {
     return cleaned.join("\n").trim();
   }
 
+  async function handleCancelUpload() {
+    cancelUploadRef.current = true;
+  }
+
   async function handleUploadPhotos(files: FileList) {
     if (!editChapterId || !selectedBookId) return;
     const arr = Array.from(files).sort((a, b) => a.lastModified - b.lastModified);
     setProcessingTotal(arr.length);
     setProcessingDone(0);
+    cancelUploadRef.current = false;
     setUploading(true);
 
     const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
@@ -454,6 +460,11 @@ export default function Home() {
     const removeBleedThrough = selectedBook?.settings.removeBleedThrough !== false;
 
     for (let i = 0; i < arr.length; i++) {
+      if (cancelUploadRef.current) {
+        const remainingIds = newPages.slice(i).map((p) => p.id);
+        await deletePages(remainingIds);
+        break;
+      }
       const page = newPages[i];
       try {
         await updatePage({ ...page, status: "processing" });
@@ -1100,6 +1111,10 @@ export default function Home() {
                 <div className="bg-blue-50 border border-blue-200 rounded-xl px-3 py-2 mb-2">
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-xs text-blue-600 font-medium">⟳ 処理中 {processingDone} / {processingTotal} 枚</span>
+                    <button
+                      onClick={handleCancelUpload}
+                      className="text-xs text-red-400 border border-red-200 bg-white rounded-lg px-2 py-0.5 active:scale-95 transition-transform"
+                    >中断</button>
                   </div>
                   <div className="bg-blue-100 rounded-full h-1.5">
                     <div
