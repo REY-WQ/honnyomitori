@@ -1,4 +1,4 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 // OCR後処理用の正規表現（page.tsxと同じ）
 const RE_SENT_END     = /[。！？…」』）]$/;
