@@ -53,13 +53,19 @@ function cleanOcrText(raw: string, isFirstPage: boolean, removeBleedThrough: boo
 }
 
 Deno.serve(async (req) => {
-  try {
-    const { pageId, bookId, isFirstPage, removeBleedThrough } = await req.json();
+  let pageId: string | undefined;
+  let bookId: string | undefined;
+  const supabase = createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  );
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
+  try {
+    const body = await req.json();
+    pageId = body.pageId;
+    bookId = body.bookId;
+    const isFirstPage: boolean = body.isFirstPage ?? false;
+    const removeBleedThrough: boolean = body.removeBleedThrough ?? true;
 
     // Storageから画像を取得
     const { data: imageData, error: storageError } = await supabase.storage
@@ -102,23 +108,29 @@ Deno.serve(async (req) => {
     const visionData = await visionRes.json();
     const rawText: string = visionData.responses?.[0]?.fullTextAnnotation?.text ?? "";
 
+    // 成功・失敗どちらでも画像を削除
+    await supabase.storage.from("ocr-images").remove([`${bookId}/${pageId}`]);
+
     if (rawText) {
-      const text = cleanOcrText(rawText, isFirstPage ?? false, removeBleedThrough ?? true);
+      const text = cleanOcrText(rawText, isFirstPage, removeBleedThrough);
       await supabase.from("pages").update({
         text,
         status: "done",
         processed_at: new Date().toISOString(),
       }).eq("id", pageId);
-      // 成功したら画像を削除
-      await supabase.storage.from("ocr-images").remove([`${bookId}/${pageId}`]);
     } else {
-      // テキストなし→エラー、画像は残してリトライ可能に
       await supabase.from("pages").update({ status: "error" }).eq("id", pageId);
     }
 
     return new Response("OK", { status: 200 });
   } catch (e) {
     console.error(e);
+    if (pageId) {
+      await supabase.from("pages").update({ status: "error" }).eq("id", pageId).catch(() => {});
+    }
+    if (bookId && pageId) {
+      await supabase.storage.from("ocr-images").remove([`${bookId}/${pageId}`]).catch(() => {});
+    }
     return new Response("Internal error", { status: 500 });
   }
 });
