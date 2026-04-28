@@ -179,6 +179,29 @@ export async function reorderPages(updates: { id: string; pageNumber: number }[]
   );
 }
 
+// ===== PAGE IMAGES (Supabase Storage) =====
+
+export async function uploadPageImage(bookId: string, pageId: string, base64: string): Promise<void> {
+  const supabase = getSupabase();
+  const raw = base64.includes(",") ? base64.split(",")[1] : base64;
+  const byteString = atob(raw);
+  const bytes = new Uint8Array(byteString.length);
+  for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i);
+  const blob = new Blob([bytes], { type: "image/jpeg" });
+  await supabase.storage.from("ocr-images").upload(`${bookId}/${pageId}`, blob, { upsert: true });
+}
+
+export async function deletePageImage(bookId: string, pageId: string): Promise<void> {
+  const supabase = getSupabase();
+  await supabase.storage.from("ocr-images").remove([`${bookId}/${pageId}`]);
+}
+
+export async function pageImageExists(bookId: string, pageId: string): Promise<boolean> {
+  const supabase = getSupabase();
+  const { data } = await supabase.storage.from("ocr-images").list(bookId, { search: pageId });
+  return (data?.length ?? 0) > 0;
+}
+
 // Smart chapter name: find max number in existing chapter names and return next
 export function nextChapterName(chapters: Chapter[]): string {
   const numbers = chapters

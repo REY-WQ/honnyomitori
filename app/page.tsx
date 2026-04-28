@@ -9,6 +9,7 @@ import {
   addPages, updatePage, deletePage, deletePages,
   reorderChapters, reorderPages,
   nextChapterName,
+  uploadPageImage, deletePageImage, pageImageExists,
 } from "@/lib/storage";
 import { compressImage } from "@/lib/compress";
 import { getSupabase } from "@/lib/supabase";
@@ -449,25 +450,19 @@ export default function Home() {
     await addPages(selectedBookId, editChapterId, newPages);
     await reload();
 
+    const supabase = getSupabase();
+    const removeBleedThrough = selectedBook?.settings.removeBleedThrough !== false;
+
     for (let i = 0; i < arr.length; i++) {
       const page = newPages[i];
       try {
         await updatePage({ ...page, status: "processing" });
         const base64 = await compressImage(arr[i]);
-        const res = await fetch("/api/ocr", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageBase64: base64 }),
-          signal: AbortSignal.timeout(30000),
-        });
-        if (!res.ok) throw new Error(`OCR ${res.status}`);
-        const data = await res.json();
-        if (data.text !== undefined) {
-          const isFirstPage = (chapter?.pages.length ?? 0) === 0 && i === 0;
-          await updatePage({ ...page, text: cleanOcrText(data.text, isFirstPage), status: "done", processedAt: new Date().toISOString() });
-        } else {
-          await updatePage({ ...page, status: "error" });
-        }
+        await uploadPageImage(selectedBookId, page.id, base64);
+        const isFirstPage = (chapter?.pages.length ?? 0) === 0 && i === 0;
+        supabase.functions.invoke("ocr-process", {
+          body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
+        }).catch(console.error);
       } catch {
         await updatePage({ ...page, status: "error" });
       }
@@ -479,34 +474,44 @@ export default function Home() {
     setProcessingDone(0);
   }
 
-  async function handleRetryPage(page: Page, file: File) {
+  async function handleRetryPage(page: Page) {
     if (!selectedBookId || !editChapterId) return;
-    try {
-      await updatePage({ ...page, status: "processing" });
-      await reload();
+    const supabase = getSupabase();
+    const imageExists = await pageImageExists(selectedBookId, page.id);
+    if (imageExists) {
       const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
       const isFirstPage = chapter?.pages[0]?.id === page.id;
+      const removeBleedThrough = selectedBook?.settings.removeBleedThrough !== false;
+      await updatePage({ ...page, status: "processing" });
+      supabase.functions.invoke("ocr-process", {
+        body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
+      }).catch(console.error);
+    } else {
+      retryPageRef.current = page;
+      retryFileInputRef.current?.click();
+    }
+  }
+
+  async function handleRetryWithFile(page: Page, file: File) {
+    if (!selectedBookId || !editChapterId) return;
+    const supabase = getSupabase();
+    try {
+      await updatePage({ ...page, status: "processing" });
       const base64 = await compressImage(file);
-      const res = await fetch("/api/ocr", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: base64 }),
-        signal: AbortSignal.timeout(30000),
-      });
-      if (!res.ok) throw new Error(`OCR ${res.status}`);
-      const data = await res.json();
-      if (data.text !== undefined) {
-        await updatePage({ ...page, text: cleanOcrText(data.text, isFirstPage), status: "done", processedAt: new Date().toISOString() });
-      } else {
-        await updatePage({ ...page, status: "error" });
-      }
+      await uploadPageImage(selectedBookId, page.id, base64);
+      const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
+      const isFirstPage = chapter?.pages[0]?.id === page.id;
+      const removeBleedThrough = selectedBook?.settings.removeBleedThrough !== false;
+      supabase.functions.invoke("ocr-process", {
+        body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
+      }).catch(console.error);
     } catch {
       await updatePage({ ...page, status: "error" });
     }
-    reload();
   }
 
   async function handleDeletePage(id: string) {
+    if (selectedBookId) await deletePageImage(selectedBookId, id).catch(() => {});
     await deletePage(id);
     if (selectedPageId === id) setSelectedPageId(null);
     reload();
@@ -514,7 +519,11 @@ export default function Home() {
 
   async function handleBulkDelete() {
     if (deletingPageIds.size === 0) return;
-    await deletePages(Array.from(deletingPageIds));
+    const ids = Array.from(deletingPageIds);
+    if (selectedBookId) {
+      await Promise.all(ids.map((id) => deletePageImage(selectedBookId, id).catch(() => {})));
+    }
+    await deletePages(ids);
     setDeletingPageIds(new Set());
     setSelectMode(false);
     setSelectedPageId(null);
@@ -1171,7 +1180,7 @@ export default function Home() {
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
-                  if (file && retryPageRef.current) handleRetryPage(retryPageRef.current, file);
+                  if (file && retryPageRef.current) handleRetryWithFile(retryPageRef.current, file);
                   e.target.value = "";
                 }}
               />
@@ -1277,7 +1286,7 @@ export default function Home() {
                     )}
                     {!selectMode && page.status === "error" && (
                       <button
-                        onClick={(e) => { e.stopPropagation(); retryPageRef.current = page; retryFileInputRef.current?.click(); }}
+                        onClick={(e) => { e.stopPropagation(); handleRetryPage(page); }}
                         className="text-xs bg-red-50 text-red-400 border border-red-200 rounded-lg px-2 py-1 shrink-0"
                       >🔄</button>
                     )}
