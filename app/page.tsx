@@ -463,6 +463,7 @@ export default function Home() {
       if (cancelUploadRef.current) {
         const remainingIds = newPages.slice(i).map((p) => p.id);
         await deletePages(remainingIds);
+        await reload();
         break;
       }
       const page = newPages[i];
