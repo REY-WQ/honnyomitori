@@ -130,6 +130,29 @@ export default function Home() {
     reload();
   }, [reload]);
 
+  // Recover stuck "processing" pages on mount
+  useEffect(() => {
+    async function recoverProcessingPages() {
+      const supabase = getSupabase();
+      const books = await getBooks();
+      const processingPages = books.flatMap((b) =>
+        b.chapters.flatMap((c) =>
+          c.pages
+            .filter((p) => p.status === "processing")
+            .map((p) => ({ page: p, book: b, chapter: c }))
+        )
+      );
+      for (const { page, book, chapter } of processingPages) {
+        const isFirstPage = chapter.pages[0]?.id === page.id;
+        const removeBleedThrough = book.settings.removeBleedThrough !== false;
+        supabase.functions.invoke("ocr-process", {
+          body: { pageId: page.id, bookId: book.id, isFirstPage, removeBleedThrough },
+        }).catch(console.error);
+      }
+    }
+    recoverProcessingPages();
+  }, []);
+
   // Realtime subscription
   useEffect(() => {
     const supabase = getSupabase();
