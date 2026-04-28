@@ -489,16 +489,16 @@ export default function Home() {
   async function handleRetryPage(page: Page) {
     if (!selectedBookId || !editChapterId) return;
     const supabase = getSupabase();
-    const imageExists = await pageImageExists(selectedBookId, page.id);
-    if (imageExists) {
-      const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
-      const isFirstPage = chapter?.pages[0]?.id === page.id;
-      const removeBleedThrough = selectedBook?.settings.removeBleedThrough !== false;
-      await updatePage({ ...page, status: "processing" });
-      supabase.functions.invoke("ocr-process", {
-        body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
-      }).catch(console.error);
-    } else {
+    const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
+    const isFirstPage = chapter?.pages[0]?.id === page.id;
+    const removeBleedThrough = selectedBook?.settings.removeBleedThrough !== false;
+    await updatePage({ ...page, status: "processing" });
+    const { error } = await supabase.functions.invoke("ocr-process", {
+      body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
+    });
+    if (error) {
+      // 画像がない場合はファイルピッカーにフォールバック
+      await updatePage({ ...page, status: "error" });
       retryPageRef.current = page;
       retryFileInputRef.current?.click();
     }
