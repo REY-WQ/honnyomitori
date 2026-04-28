@@ -482,6 +482,8 @@ export default function Home() {
     const supabase = getSupabase();
     const removeBleedThrough = selectedBook?.settings.removeBleedThrough !== false;
 
+    // フェーズ1: 全画像をStorageにアップロード
+    const uploadedPages: { page: Page; isFirstPage: boolean }[] = [];
     for (let i = 0; i < arr.length; i++) {
       if (cancelUploadRef.current) {
         const remainingIds = newPages.slice(i).map((p) => p.id);
@@ -491,17 +493,22 @@ export default function Home() {
       }
       const page = newPages[i];
       try {
-        await updatePage({ ...page, status: "processing" });
         const base64 = await compressImage(arr[i]);
         await uploadPageImage(selectedBookId, page.id, base64);
         const isFirstPage = (chapter?.pages.length ?? 0) === 0 && i === 0;
-        supabase.functions.invoke("ocr-process", {
-          body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
-        }).catch(console.error);
+        uploadedPages.push({ page, isFirstPage });
       } catch {
         await updatePage({ ...page, status: "error" });
       }
       setProcessingDone(i + 1);
+    }
+
+    // フェーズ2: アップロード完了分を一括でprocessingにしてEdge Function起動
+    await Promise.all(uploadedPages.map(({ page }) => updatePage({ ...page, status: "processing" })));
+    for (const { page, isFirstPage } of uploadedPages) {
+      supabase.functions.invoke("ocr-process", {
+        body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
+      }).catch(console.error);
     }
 
     setUploading(false);
