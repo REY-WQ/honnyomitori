@@ -1635,7 +1635,7 @@ export default function Home() {
                       }
                     }}
                     placeholder="章内検索..."
-                    className="text-xs border border-gray-200 rounded-lg px-2 py-1 w-20 outline-none focus:border-blue-300"
+                    className="text-xs border border-gray-200 rounded-lg px-2 py-1 w-12 md:w-20 outline-none focus:border-blue-300"
                   />
                   <button type="submit" className="bg-gray-800 text-white text-xs rounded-lg px-1.5 py-1 shrink-0 active:scale-95">🔍</button>
                   {chapterSearchActive && (
@@ -1648,7 +1648,7 @@ export default function Home() {
                     <div className="flex rounded-xl overflow-hidden border border-gray-200">
                       <button
                         onClick={() => selectedPage && handleCleanBleedThroughPage(selectedPage)}
-                        className="bg-yellow-50 text-yellow-500 text-xs font-bold px-2.5 py-1 border-r border-gray-200 active:scale-95 transition-transform"
+                        className="bg-orange-50 border-r border-orange-200 text-orange-500 text-xs font-bold px-2.5 py-1 active:scale-95 transition-transform"
                         title="このページの映り込みを除去"
                       >✦</button>
                       <button
