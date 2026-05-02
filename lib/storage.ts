@@ -188,7 +188,8 @@ export async function uploadPageImage(bookId: string, pageId: string, base64: st
   const bytes = new Uint8Array(byteString.length);
   for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i);
   const blob = new Blob([bytes], { type: "image/jpeg" });
-  await supabase.storage.from("ocr-images").upload(`${bookId}/${pageId}`, blob, { upsert: true });
+  const { error } = await supabase.storage.from("ocr-images").upload(`${bookId}/${pageId}`, blob, { upsert: true });
+  if (error) throw new Error(`Storage upload failed: ${error.message}`);
 }
 
 export async function deletePageImage(bookId: string, pageId: string): Promise<void> {
