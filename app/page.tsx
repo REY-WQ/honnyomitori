@@ -312,7 +312,7 @@ export default function Home() {
       id: uuidv4(),
       title: newBookTitle.trim(),
       createdAt: new Date().toISOString(),
-      settings: { chapterNavMode: "buttons", removeBleedThrough: true },
+      settings: { chapterNavMode: "buttons", removeBleedThrough: true, removeBleedThroughBetweenPages: false },
     };
     await addBook(book);
     setNewBookTitle("");
@@ -484,6 +484,7 @@ export default function Home() {
       text: "",
       processedAt: "",
       status: "pending" as const,
+      bleedThroughCleaned: false,
     }));
 
     await addPages(selectedBookId, editChapterId, newPages);
