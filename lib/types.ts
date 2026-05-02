@@ -20,12 +20,14 @@ export interface BookSettings {
   chapterNavMode: "buttons" | "dropdown";
   removeBleedThrough: boolean;
   removeBleedThroughBetweenPages: boolean;
+  doubleClickUndo: "popup" | "next";
 }
 
 export const DEFAULT_BOOK_SETTINGS: BookSettings = {
   chapterNavMode: "buttons",
   removeBleedThrough: true,
   removeBleedThroughBetweenPages: false,
+  doubleClickUndo: "popup",
 };
 
 export interface Book {

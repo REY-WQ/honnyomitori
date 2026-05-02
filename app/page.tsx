@@ -312,7 +312,7 @@ export default function Home() {
       id: uuidv4(),
       title: newBookTitle.trim(),
       createdAt: new Date().toISOString(),
-      settings: { chapterNavMode: "buttons", removeBleedThrough: true, removeBleedThroughBetweenPages: false },
+      settings: { chapterNavMode: "buttons", removeBleedThrough: true, removeBleedThroughBetweenPages: false, doubleClickUndo: "popup" },
     };
     await addBook(book);
     setNewBookTitle("");
@@ -671,6 +671,63 @@ export default function Home() {
   const [cleaningBleed, setCleaningBleed] = useState(false);
   const [cleaningBleedResult, setCleaningBleedResult] = useState<string | null>(null);
 
+  // 履歴: pageId → { texts: string[], index: number }
+  const pageHistoryRef = useRef<Map<string, { texts: string[]; index: number }>>(new Map());
+
+  // undo/redoポップアップ
+  const [undoPopup, setUndoPopup] = useState<{ pageId: string } | null>(null);
+  const undoPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function pushHistory(pageId: string, text: string) {
+    const map = pageHistoryRef.current;
+    const entry = map.get(pageId) ?? { texts: [], index: -1 };
+    // 現在位置より後の履歴は捨てる
+    const newTexts = [...entry.texts.slice(0, entry.index + 1), text].slice(-10);
+    map.set(pageId, { texts: newTexts, index: newTexts.length - 1 });
+  }
+
+  async function handleUndo(pageId: string) {
+    const entry = pageHistoryRef.current.get(pageId);
+    if (!entry || entry.index <= 0) return;
+    const newIndex = entry.index - 1;
+    const text = entry.texts[newIndex];
+    pageHistoryRef.current.set(pageId, { ...entry, index: newIndex });
+    const page = editChapter?.pages.find((p) => p.id === pageId);
+    if (!page) return;
+    await updatePage({ ...page, text, bleedThroughCleaned: false });
+    await resetNeighborBleedFlags(page, editChapter?.pages ?? []);
+    reload();
+  }
+
+  async function handleRedo(pageId: string) {
+    const entry = pageHistoryRef.current.get(pageId);
+    if (!entry || entry.index >= entry.texts.length - 1) return;
+    const newIndex = entry.index + 1;
+    const text = entry.texts[newIndex];
+    pageHistoryRef.current.set(pageId, { ...entry, index: newIndex });
+    const page = editChapter?.pages.find((p) => p.id === pageId);
+    if (!page) return;
+    await updatePage({ ...page, text, bleedThroughCleaned: newIndex > 0 });
+    reload();
+  }
+
+  function handleUndoButtonClick(pageId: string) {
+    const entry = pageHistoryRef.current.get(pageId);
+    if (!entry || entry.index <= 0) return;
+    handleUndo(pageId);
+  }
+
+  function handleUndoButtonDoubleClick(pageId: string) {
+    if (undoPopupTimerRef.current) clearTimeout(undoPopupTimerRef.current);
+    const setting = selectedBook?.settings.doubleClickUndo ?? "popup";
+    if (setting === "next") {
+      handleRedo(pageId);
+    } else {
+      setUndoPopup({ pageId });
+      undoPopupTimerRef.current = setTimeout(() => setUndoPopup(null), 4000);
+    }
+  }
+
   function removeLinesMatchingNeighbor(targetLines: string[], neighborLines: string[]): { lines: string[]; removed: number } {
     let removed = 0;
     const filtered = targetLines.filter((line) => {
@@ -686,6 +743,7 @@ export default function Home() {
     return { lines: filtered, removed };
   }
 
+  // 章全体の映り込み除去（✦ヘッダーボタン用）
   async function handleCleanBleedThrough() {
     if (!editChapter || cleaningBleed) return;
     setCleaningBleed(true);
@@ -702,20 +760,15 @@ export default function Home() {
       if (curr.bleedThroughCleaned) continue;
 
       const currLines = curr.text.split("\n");
-      const headLines = currLines.slice(0, 10);
-      const tailLines = currLines.slice(-10);
       let newLines = [...currLines];
       let removed = 0;
 
-      // 冒頭10行と前ページ末尾10行を比較
       if (prev) {
         const prevTail = prev.text.split("\n").slice(-10);
-        const { lines, removed: r } = removeLinesMatchingNeighbor(headLines, prevTail);
+        const { lines, removed: r } = removeLinesMatchingNeighbor(newLines.slice(0, 10), prevTail);
         newLines = [...lines, ...newLines.slice(10)];
         removed += r;
       }
-
-      // 末尾10行と次ページ冒頭10行を比較
       if (next) {
         const nextHead = next.text.split("\n").slice(0, 10);
         const tailStart = Math.max(0, newLines.length - 10);
@@ -724,10 +777,12 @@ export default function Home() {
         removed += r;
       }
 
+      const newText = newLines.join("\n").trim();
       if (removed > 0) {
         totalRemoved += removed;
-        toUpdate.push({ ...curr, text: newLines.join("\n").trim(), bleedThroughCleaned: true });
-        // 前後ページも処理済みフラグを立てる
+        pushHistory(curr.id, curr.text);
+        pushHistory(curr.id, newText);
+        toUpdate.push({ ...curr, text: newText, bleedThroughCleaned: true });
         if (prev && !prev.bleedThroughCleaned) {
           const already = toUpdate.find((p) => p.id === prev.id);
           if (!already) toUpdate.push({ ...prev, bleedThroughCleaned: true });
@@ -748,6 +803,40 @@ export default function Home() {
     setCleaningBleed(false);
     setCleaningBleedResult(`除去完了（${totalRemoved}箇所）`);
     setTimeout(() => setCleaningBleedResult(null), 4000);
+  }
+
+  // 1ページの映り込み除去（ナビバー✦ボタン用）
+  async function handleCleanBleedThroughPage(page: Page) {
+    if (!editChapter) return;
+    const pages = [...editChapter.pages].sort((a, b) => a.pageNumber - b.pageNumber);
+    const idx = pages.findIndex((p) => p.id === page.id);
+    const prev = pages[idx - 1];
+    const next = pages[idx + 1];
+
+    let newLines = page.text.split("\n");
+    let removed = 0;
+
+    if (prev) {
+      const prevTail = prev.text.split("\n").slice(-10);
+      const { lines, removed: r } = removeLinesMatchingNeighbor(newLines.slice(0, 10), prevTail);
+      newLines = [...lines, ...newLines.slice(10)];
+      removed += r;
+    }
+    if (next) {
+      const nextHead = next.text.split("\n").slice(0, 10);
+      const tailStart = Math.max(0, newLines.length - 10);
+      const { lines, removed: r } = removeLinesMatchingNeighbor(newLines.slice(tailStart), nextHead);
+      newLines = [...newLines.slice(0, tailStart), ...lines];
+      removed += r;
+    }
+
+    const newText = newLines.join("\n").trim();
+    pushHistory(page.id, page.text);
+    pushHistory(page.id, newText);
+    await updatePage({ ...page, text: newText, bleedThroughCleaned: true });
+    if (prev) await updatePage({ ...prev, bleedThroughCleaned: true });
+    if (next) await updatePage({ ...next, bleedThroughCleaned: true });
+    reload();
   }
 
   // ===== SEARCH =====
@@ -1317,12 +1406,6 @@ export default function Home() {
                       disabled={uploading || (editChapter?.pages.length ?? 0) === 0}
                       className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 active:scale-95 transition-transform disabled:opacity-30"
                     >選択</button>
-                    <button
-                      onClick={handleCleanBleedThrough}
-                      disabled={uploading || cleaningBleed || (editChapter?.pages.length ?? 0) === 0}
-                      className="bg-orange-50 border border-orange-200 text-orange-500 text-xs font-bold rounded-xl px-2.5 active:scale-95 transition-transform disabled:opacity-30"
-                      title="ページ間映り込みを除去"
-                    >✦</button>
                   </div>
                   {cleaningBleedResult && (
                     <div className="text-xs text-green-600 bg-green-50 border border-green-200 rounded-xl px-3 py-1.5 mb-2 text-center">
@@ -1559,6 +1642,36 @@ export default function Home() {
                     <button type="button" onClick={resetChapterSearch} className="text-gray-400 hover:text-gray-600 text-sm leading-none px-0.5">✕</button>
                   )}
                 </form>
+                {/* Split ✦|↩ button */}
+                {selectedPage?.status === "done" && (
+                  <div className="relative ml-1 shrink-0">
+                    <div className="flex rounded-xl overflow-hidden border border-gray-200">
+                      <button
+                        onClick={() => selectedPage && handleCleanBleedThroughPage(selectedPage)}
+                        className="bg-yellow-50 text-yellow-500 text-xs font-bold px-2.5 py-1 border-r border-gray-200 active:scale-95 transition-transform"
+                        title="このページの映り込みを除去"
+                      >✦</button>
+                      <button
+                        onClick={() => selectedPage && handleUndoButtonClick(selectedPage.id)}
+                        onDoubleClick={() => selectedPage && handleUndoButtonDoubleClick(selectedPage.id)}
+                        className="bg-blue-600 text-white text-xs font-bold px-2.5 py-1 active:scale-95 transition-transform"
+                        title="元に戻す（ダブルクリック: 進む）"
+                      >↩</button>
+                    </div>
+                    {undoPopup?.pageId === selectedPage?.id && (
+                      <div className="absolute top-full left-0 mt-1 z-50 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden whitespace-nowrap">
+                        <button
+                          onClick={() => { handleUndo(undoPopup.pageId); setUndoPopup(null); }}
+                          className="block w-full text-left px-4 py-2 text-xs text-gray-700 hover:bg-gray-50 active:bg-gray-100"
+                        >↩ 前に戻る</button>
+                        <button
+                          onClick={() => { handleRedo(undoPopup.pageId); setUndoPopup(null); }}
+                          className="block w-full text-left px-4 py-2 text-xs text-gray-700 hover:bg-gray-50 active:bg-gray-100 border-t border-gray-100"
+                        >↪ 次に進む</button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-1.5">
                 <button onClick={() => { setView("text"); setMobilePanel("list"); setEditingPageId(null); }} className="text-xs bg-gray-100 text-gray-600 rounded-lg px-2.5 py-1.5 active:scale-95 transition-transform whitespace-nowrap">← 戻る</button>
@@ -1715,6 +1828,24 @@ export default function Home() {
                   className="accent-blue-600 w-4 h-4"
                 />
               </label>
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">↩ ダブルクリック動作</p>
+              {(["popup", "next"] as const).map((mode) => (
+                <label key={mode} className="flex items-center gap-2.5 px-2 py-2 rounded-xl cursor-pointer hover:bg-gray-50">
+                  <input
+                    type="radio"
+                    name="doubleClickUndo"
+                    checked={(selectedBook.settings.doubleClickUndo ?? "popup") === mode}
+                    onChange={() => handleUpdateSettings({ ...selectedBook.settings, doubleClickUndo: mode })}
+                    className="accent-blue-600"
+                  />
+                  <span className="text-sm text-gray-700">
+                    {mode === "popup" ? "前に戻る / 次に進む を確認（デフォルト）" : "すぐ次に進む"}
+                  </span>
+                </label>
+              ))}
             </div>
 
             <div>
