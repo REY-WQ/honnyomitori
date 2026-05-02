@@ -1647,9 +1647,10 @@ export default function Home() {
                   <div className="relative ml-1 shrink-0">
                     <div className="flex rounded-xl overflow-hidden border border-gray-200">
                       <button
-                        onClick={() => selectedPage && handleCleanBleedThroughPage(selectedPage)}
-                        className="bg-orange-50 border-r border-orange-200 text-orange-500 text-xs font-bold px-2.5 py-1 active:scale-95 transition-transform"
-                        title="このページの映り込みを除去"
+                        onClick={() => handleCleanBleedThrough()}
+                        disabled={cleaningBleed || (editChapter?.pages.length ?? 0) === 0}
+                        className="bg-orange-50 border-r border-orange-200 text-orange-500 text-xs font-bold px-2.5 py-1 active:scale-95 transition-transform disabled:opacity-40"
+                        title="章全体の映り込みを除去"
                       >✦</button>
                       <button
                         onClick={() => selectedPage && handleUndoButtonClick(selectedPage.id)}
