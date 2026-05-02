@@ -75,6 +75,7 @@ function mapPage(p: Record<string, unknown>): Page {
     text: (p.text as string) || "",
     processedAt: (p.processed_at as string) || "",
     status: p.status as Page["status"],
+    bleedThroughCleaned: (p.bleed_through_cleaned as boolean) ?? false,
   };
 }
 
@@ -148,6 +149,7 @@ export async function updatePage(page: Page): Promise<void> {
     text: page.text,
     processed_at: page.processedAt || null,
     status: page.status,
+    bleed_through_cleaned: page.bleedThroughCleaned,
   }).eq("id", page.id);
 }
 

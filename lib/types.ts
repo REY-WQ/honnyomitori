@@ -5,6 +5,7 @@ export interface Page {
   text: string;
   processedAt: string;
   status: "pending" | "processing" | "done" | "error";
+  bleedThroughCleaned: boolean;
 }
 
 export interface Chapter {
@@ -18,11 +19,13 @@ export interface Chapter {
 export interface BookSettings {
   chapterNavMode: "buttons" | "dropdown";
   removeBleedThrough: boolean;
+  removeBleedThroughBetweenPages: boolean;
 }
 
 export const DEFAULT_BOOK_SETTINGS: BookSettings = {
   chapterNavMode: "buttons",
   removeBleedThrough: true,
+  removeBleedThroughBetweenPages: false,
 };
 
 export interface Book {

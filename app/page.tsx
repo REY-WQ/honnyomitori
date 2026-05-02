@@ -532,13 +532,13 @@ export default function Home() {
     const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
     const isFirstPage = chapter?.pages[0]?.id === page.id;
     const removeBleedThrough = selectedBook?.settings.removeBleedThrough !== false;
-    await updatePage({ ...page, status: "processing" });
+    await updatePage({ ...page, status: "processing", bleedThroughCleaned: false });
+    await resetNeighborBleedFlags(page, chapter?.pages ?? []);
     const { error } = await supabase.functions.invoke("ocr-process", {
       body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
     });
     if (error) {
-      // 画像がない場合はファイルピッカーにフォールバック
-      await updatePage({ ...page, status: "error" });
+      await updatePage({ ...page, status: "error", bleedThroughCleaned: false });
       retryPageRef.current = page;
       retryFileInputRef.current?.click();
     }
@@ -547,19 +547,29 @@ export default function Home() {
   async function handleRetryWithFile(page: Page, file: File) {
     if (!selectedBookId || !editChapterId) return;
     const supabase = getSupabase();
+    const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
     try {
-      await updatePage({ ...page, status: "processing" });
+      await updatePage({ ...page, status: "processing", bleedThroughCleaned: false });
+      await resetNeighborBleedFlags(page, chapter?.pages ?? []);
       const base64 = await compressImage(file);
       await uploadPageImage(selectedBookId, page.id, base64);
-      const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
       const isFirstPage = chapter?.pages[0]?.id === page.id;
       const removeBleedThrough = selectedBook?.settings.removeBleedThrough !== false;
       supabase.functions.invoke("ocr-process", {
         body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
       }).catch(console.error);
     } catch {
-      await updatePage({ ...page, status: "error" });
+      await updatePage({ ...page, status: "error", bleedThroughCleaned: false });
     }
+  }
+
+  async function resetNeighborBleedFlags(page: Page, pages: Page[]) {
+    const sorted = [...pages].sort((a, b) => a.pageNumber - b.pageNumber);
+    const idx = sorted.findIndex((p) => p.id === page.id);
+    const neighbors = [sorted[idx - 1], sorted[idx + 1]].filter(Boolean);
+    await Promise.all(
+      neighbors.map((n) => updatePage({ ...n, bleedThroughCleaned: false }))
+    );
   }
 
   async function handleDeletePage(id: string) {
@@ -598,7 +608,9 @@ export default function Home() {
   async function handleSaveEdit() {
     if (!editingPageId || !selectedPage) return;
     setSavingEdit(true);
-    await updatePage({ ...selectedPage, text: editingText });
+    const chapter = selectedBook?.chapters.find((c) => c.id === editChapterId);
+    await updatePage({ ...selectedPage, text: editingText, bleedThroughCleaned: false });
+    await resetNeighborBleedFlags(selectedPage, chapter?.pages ?? []);
     setSavingEdit(false);
     setEditingPageId(null);
     reload();
@@ -638,6 +650,8 @@ export default function Home() {
     if (!sortingPages || !editChapterId) return;
     const updates = sortingPages.map((p, i) => ({ id: p.id, pageNumber: i + 1 }));
     await reorderPages(updates);
+    // 並び替え後は全ページのフラグをリセット
+    await Promise.all(sortingPages.map((p) => updatePage({ ...p, bleedThroughCleaned: false })));
     setSortingPages(null);
     reload();
   }
@@ -649,6 +663,90 @@ export default function Home() {
     const updates = editChapter.pages.map((p) => ({ id: p.id, pageNumber: p.pageNumber + offset }));
     await reorderPages(updates);
     reload();
+  }
+
+  // ===== BLEED-THROUGH BETWEEN PAGES =====
+
+  const [cleaningBleed, setCleaningBleed] = useState(false);
+  const [cleaningBleedResult, setCleaningBleedResult] = useState<string | null>(null);
+
+  function removeLinesMatchingNeighbor(targetLines: string[], neighborLines: string[]): { lines: string[]; removed: number } {
+    let removed = 0;
+    const filtered = targetLines.filter((line) => {
+      const t = line.trim();
+      if (!t || t.length < 10) return true;
+      const matched = neighborLines.some((n) => {
+        const nt = n.trim();
+        return nt.length >= 10 && (nt.startsWith(t) || t.startsWith(nt));
+      });
+      if (matched) { removed++; return false; }
+      return true;
+    });
+    return { lines: filtered, removed };
+  }
+
+  async function handleCleanBleedThrough() {
+    if (!editChapter || cleaningBleed) return;
+    setCleaningBleed(true);
+    setCleaningBleedResult(null);
+
+    const pages = [...editChapter.pages].sort((a, b) => a.pageNumber - b.pageNumber);
+    let totalRemoved = 0;
+    const toUpdate: Page[] = [];
+
+    for (let i = 0; i < pages.length; i++) {
+      const prev = pages[i - 1];
+      const curr = pages[i];
+      const next = pages[i + 1];
+      if (curr.bleedThroughCleaned) continue;
+
+      const currLines = curr.text.split("\n");
+      const headLines = currLines.slice(0, 10);
+      const tailLines = currLines.slice(-10);
+      let newLines = [...currLines];
+      let removed = 0;
+
+      // 冒頭10行と前ページ末尾10行を比較
+      if (prev) {
+        const prevTail = prev.text.split("\n").slice(-10);
+        const { lines, removed: r } = removeLinesMatchingNeighbor(headLines, prevTail);
+        newLines = [...lines, ...newLines.slice(10)];
+        removed += r;
+      }
+
+      // 末尾10行と次ページ冒頭10行を比較
+      if (next) {
+        const nextHead = next.text.split("\n").slice(0, 10);
+        const tailStart = Math.max(0, newLines.length - 10);
+        const { lines, removed: r } = removeLinesMatchingNeighbor(newLines.slice(tailStart), nextHead);
+        newLines = [...newLines.slice(0, tailStart), ...lines];
+        removed += r;
+      }
+
+      if (removed > 0) {
+        totalRemoved += removed;
+        toUpdate.push({ ...curr, text: newLines.join("\n").trim(), bleedThroughCleaned: true });
+        // 前後ページも処理済みフラグを立てる
+        if (prev && !prev.bleedThroughCleaned) {
+          const already = toUpdate.find((p) => p.id === prev.id);
+          if (!already) toUpdate.push({ ...prev, bleedThroughCleaned: true });
+          else already.bleedThroughCleaned = true;
+        }
+        if (next && !next.bleedThroughCleaned) {
+          const already = toUpdate.find((p) => p.id === next.id);
+          if (!already) toUpdate.push({ ...next, bleedThroughCleaned: true });
+          else already.bleedThroughCleaned = true;
+        }
+      } else {
+        toUpdate.push({ ...curr, bleedThroughCleaned: true });
+      }
+    }
+
+    await Promise.all(toUpdate.map((p) => updatePage(p)));
+    await reload();
+    setCleaningBleed(false);
+    setCleaningBleedResult(`除去完了（${totalRemoved}箇所）`);
+    setTimeout(() => setCleaningBleedResult(null), 4000);
   }
 
   // ===== SEARCH =====
@@ -1213,12 +1311,28 @@ export default function Home() {
                       className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 active:scale-95 transition-transform disabled:opacity-30"
                       title="ページを並び替え"
                     >⇅</button>
+                    <button
+                      onClick={() => setSelectMode(true)}
+                      disabled={uploading || (editChapter?.pages.length ?? 0) === 0}
+                      className="bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl px-3 active:scale-95 transition-transform disabled:opacity-30"
+                    >選択</button>
+                    <button
+                      onClick={handleCleanBleedThrough}
+                      disabled={uploading || cleaningBleed || (editChapter?.pages.length ?? 0) === 0}
+                      className="bg-orange-50 border border-orange-200 text-orange-500 text-xs font-bold rounded-xl px-2.5 active:scale-95 transition-transform disabled:opacity-30"
+                      title="ページ間映り込みを除去"
+                    >✦</button>
                   </div>
-                  <button
-                    onClick={() => setSelectMode(true)}
-                    disabled={uploading || (editChapter?.pages.length ?? 0) === 0}
-                    className="w-full bg-gray-100 text-gray-600 text-xs font-semibold rounded-xl py-2 active:scale-95 transition-transform disabled:opacity-30"
-                  >選択</button>
+                  {cleaningBleedResult && (
+                    <div className="text-xs text-green-600 bg-green-50 border border-green-200 rounded-xl px-3 py-1.5 mb-2 text-center">
+                      ✓ {cleaningBleedResult}
+                    </div>
+                  )}
+                  {cleaningBleed && (
+                    <div className="text-xs text-orange-600 bg-orange-50 border border-orange-200 rounded-xl px-3 py-1.5 mb-2 text-center">
+                      ✦ 映り込み除去中...
+                    </div>
+                  )}
                 </>
               )}
               <input
@@ -1578,13 +1692,25 @@ export default function Home() {
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">OCR後処理</p>
               <label className="flex items-center justify-between px-2 py-2 rounded-xl cursor-pointer hover:bg-gray-50">
                 <div>
-                  <p className="text-sm text-gray-700">映り込み除去</p>
-                  <p className="text-xs text-gray-400">隣ページの重複テキストを自動削除</p>
+                  <p className="text-sm text-gray-700">映り込み除去（OCR時）</p>
+                  <p className="text-xs text-gray-400">同ページ内の重複テキストを自動削除</p>
                 </div>
                 <input
                   type="checkbox"
                   checked={selectedBook.settings.removeBleedThrough !== false}
                   onChange={(e) => handleUpdateSettings({ ...selectedBook.settings, removeBleedThrough: e.target.checked })}
+                  className="accent-blue-600 w-4 h-4"
+                />
+              </label>
+              <label className="flex items-center justify-between px-2 py-2 rounded-xl cursor-pointer hover:bg-gray-50">
+                <div>
+                  <p className="text-sm text-gray-700">ページ間映り込み除去（OCR時）</p>
+                  <p className="text-xs text-gray-400">前後ページとの重複も自動削除（デフォルトOFF）</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={selectedBook.settings.removeBleedThroughBetweenPages === true}
+                  onChange={(e) => handleUpdateSettings({ ...selectedBook.settings, removeBleedThroughBetweenPages: e.target.checked })}
                   className="accent-blue-600 w-4 h-4"
                 />
               </label>
