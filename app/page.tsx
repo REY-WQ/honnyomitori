@@ -305,6 +305,10 @@ export default function Home() {
     }
   }, [editChapterId]);
 
+  useEffect(() => {
+    setBleedResultState(null);
+  }, [editChapterId]);
+
   // ===== BOOK ACTIONS =====
 
   async function handleCreateBook() {
@@ -681,6 +685,11 @@ export default function Home() {
   const [undoPopup, setUndoPopup] = useState(false);
   const undoPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // 除去/復元結果モード
+  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; charDelta: number };
+  type BleedResultState = { type: "clean" | "undo" | "redo"; diffs: BleedDiff[]; chapterId: string } | null;
+  const [bleedResultState, setBleedResultState] = useState<BleedResultState>(null);
+
   function pushChapterHistory(chapterId: string, before: PageSnap[], after: PageSnap[]) {
     const map = chapterHistoryRef.current;
     const entry = map.get(chapterId) ?? { snapshots: [], index: -1 };
@@ -693,6 +702,7 @@ export default function Home() {
     const entry = chapterHistoryRef.current.get(editChapterId);
     if (!entry || entry.index <= 0) return;
     const newIndex = entry.index - 1;
+    const current = entry.snapshots[entry.index];
     const snapshot = entry.snapshots[newIndex];
     chapterHistoryRef.current.set(editChapterId, { ...entry, index: newIndex });
     const pages = editChapter?.pages ?? [];
@@ -701,6 +711,19 @@ export default function Home() {
       return page ? updatePage({ ...page, text, bleedThroughCleaned }) : Promise.resolve();
     }));
     reload();
+    setBleedResultState({
+      type: "undo",
+      chapterId: editChapterId,
+      diffs: snapshot.map((b) => {
+        const a = current.find((x) => x.pageId === b.pageId);
+        return {
+          pageId: b.pageId,
+          pageNumber: pages.find((p) => p.id === b.pageId)?.pageNumber ?? 0,
+          removedText: b.text,
+          charDelta: b.text.length - (a?.text.length ?? 0),
+        };
+      }).filter((d) => d.charDelta !== 0),
+    });
   }
 
   async function handleRedo() {
@@ -708,6 +731,7 @@ export default function Home() {
     const entry = chapterHistoryRef.current.get(editChapterId);
     if (!entry || entry.index >= entry.snapshots.length - 1) return;
     const newIndex = entry.index + 1;
+    const current = entry.snapshots[entry.index];
     const snapshot = entry.snapshots[newIndex];
     chapterHistoryRef.current.set(editChapterId, { ...entry, index: newIndex });
     const pages = editChapter?.pages ?? [];
@@ -716,6 +740,19 @@ export default function Home() {
       return page ? updatePage({ ...page, text, bleedThroughCleaned }) : Promise.resolve();
     }));
     reload();
+    setBleedResultState({
+      type: "redo",
+      chapterId: editChapterId,
+      diffs: snapshot.map((b) => {
+        const a = current.find((x) => x.pageId === b.pageId);
+        return {
+          pageId: b.pageId,
+          pageNumber: pages.find((p) => p.id === b.pageId)?.pageNumber ?? 0,
+          removedText: b.text,
+          charDelta: b.text.length - (a?.text.length ?? 0),
+        };
+      }).filter((d) => d.charDelta !== 0),
+    });
   }
 
   function handleUndoButtonClick() {
@@ -821,6 +858,19 @@ export default function Home() {
     setCleaningBleed(false);
     setCleaningBleedResult(`除去完了（${totalRemoved}箇所）`);
     setTimeout(() => setCleaningBleedResult(null), 4000);
+
+    if (beforeSnap.length > 0) {
+      setBleedResultState({
+        type: "clean",
+        chapterId: editChapter.id,
+        diffs: beforeSnap.map((b, i) => ({
+          pageId: b.pageId,
+          pageNumber: pages.find((p) => p.id === b.pageId)?.pageNumber ?? 0,
+          removedText: b.text,
+          charDelta: afterSnap[i].text.length - b.text.length,
+        })),
+      });
+    }
   }
 
   // ===== SEARCH =====
@@ -1025,6 +1075,43 @@ export default function Home() {
                 })
               ) : (
                 <p className="text-xs text-gray-400 text-center mt-8">「{bookSearch}」に一致するページがありません</p>
+              )}
+            </div>
+          </>
+        ) : bleedResultState && bleedResultState.chapterId === editChapterId ? (
+          /* ===== BLEED RESULT MODE ===== */
+          <>
+            <div className="p-3 border-b border-gray-200">
+              <div className="flex items-center justify-between mb-1.5">
+                <p className={`text-xs font-semibold uppercase tracking-wide ${bleedResultState.type === "undo" ? "text-blue-600" : "text-orange-500"}`}>
+                  {bleedResultState.type === "undo" ? "↩ 復元結果" : bleedResultState.type === "redo" ? "↪ 再除去結果" : "✦ 除去結果"}
+                </p>
+                <button onClick={() => setBleedResultState(null)} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
+              </div>
+              <p className="text-xs text-gray-500">
+                {editChapter?.name} の {bleedResultState.diffs.length}ページを
+                {bleedResultState.type === "undo" ? "復元" : "修正"}しました
+              </p>
+            </div>
+            <div className="flex-1 overflow-y-auto p-1.5">
+              {bleedResultState.diffs.length === 0 ? (
+                <p className="text-xs text-gray-400 text-center mt-8">変更されたページはありません</p>
+              ) : (
+                bleedResultState.diffs.map((diff) => (
+                  <div
+                    key={diff.pageId}
+                    onClick={() => { setSelectedPageId(diff.pageId); setMobilePanel("text"); setShowSidebar(false); }}
+                    className={`px-2 py-2 rounded-xl cursor-pointer mb-0.5 ${diff.pageId === selectedPageId ? "bg-blue-50 border-l-2 border-blue-500" : "hover:bg-gray-50"}`}
+                  >
+                    <p className="text-xs font-semibold text-blue-600 mb-1">ページ {diff.pageNumber}</p>
+                    <p className={`text-[11px] leading-relaxed line-clamp-2 ${bleedResultState.type === "undo" ? "text-green-600" : "text-gray-400 line-through"}`}>
+                      {diff.removedText.slice(0, 60)}…
+                    </p>
+                    <p className={`text-[10px] mt-1 ${diff.charDelta > 0 ? "text-green-600" : "text-orange-500"}`}>
+                      {diff.charDelta > 0 ? `+${diff.charDelta}文字 復元` : `${diff.charDelta}文字 除去`}
+                    </p>
+                  </div>
+                ))
               )}
             </div>
           </>
