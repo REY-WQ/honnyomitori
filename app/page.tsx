@@ -235,7 +235,8 @@ export default function Home() {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Enter") return;
       if (!chapterSearchActiveRef.current) return;
-      if ((e.target as HTMLElement).tagName === "TEXTAREA") return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT") return;
       e.preventDefault();
       navigateChapterSearchRef.current("next");
     };
@@ -624,6 +625,7 @@ export default function Home() {
     const next = dir === "prev" ? idx - 1 : idx + 1;
     if (next < 0 || next >= selectedBook.chapters.length) return;
     const ch = selectedBook.chapters[next];
+    if (chapterSearchActive && chapterSearch.trim()) carryOverSearchRef.current = chapterSearch;
     setEditChapterId(ch.id);
     setSelectedPageId(ch.pages[0]?.id ?? null);
     setEditingPageId(null);
@@ -1543,7 +1545,10 @@ export default function Home() {
                   value={editChapterId ?? ""}
                   onChange={(e) => {
                     const ch = selectedBook.chapters.find((c) => c.id === e.target.value);
-                    if (ch) { setEditChapterId(ch.id); setSelectedPageId(ch.pages[0]?.id ?? null); setEditingPageId(null); }
+                    if (ch) {
+                      if (chapterSearchActive && chapterSearch.trim()) carryOverSearchRef.current = chapterSearch;
+                      setEditChapterId(ch.id); setSelectedPageId(ch.pages[0]?.id ?? null); setEditingPageId(null);
+                    }
                   }}
                   className="w-full border border-gray-200 rounded-xl px-3 py-2 text-xs text-gray-700 outline-none"
                 >
