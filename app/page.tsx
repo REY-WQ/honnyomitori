@@ -742,7 +742,16 @@ export default function Home() {
       if (!t || t.length < 10) return true;
       const matched = neighborLines.some((n) => {
         const nt = n.trim();
-        return nt.length >= 10 && (nt.startsWith(t) || t.startsWith(nt));
+        if (nt.length < 10) return false;
+        if (nt.startsWith(t) || t.startsWith(nt)) return true;
+        // 日本語は情報密度が高いため、15文字以上の共通部分文字列があれば映り込みと判定
+        const MIN = 15;
+        if (t.length >= MIN) {
+          for (let i = 0; i <= t.length - MIN; i++) {
+            if (nt.includes(t.slice(i, i + MIN))) return true;
+          }
+        }
+        return false;
       });
       if (matched) { removed++; return false; }
       return true;
