@@ -671,60 +671,65 @@ export default function Home() {
   const [cleaningBleed, setCleaningBleed] = useState(false);
   const [cleaningBleedResult, setCleaningBleedResult] = useState<string | null>(null);
 
-  // 履歴: pageId → { texts: string[], index: number }
-  const pageHistoryRef = useRef<Map<string, { texts: string[]; index: number }>>(new Map());
+  // 章単位スナップショット履歴: chapterId → { snapshots: [{pageId, text, bleedThroughCleaned}][], index }
+  type PageSnap = { pageId: string; text: string; bleedThroughCleaned: boolean };
+  const chapterHistoryRef = useRef<Map<string, { snapshots: PageSnap[][]; index: number }>>(new Map());
 
-  // undo/redoポップアップ
-  const [undoPopup, setUndoPopup] = useState<{ pageId: string } | null>(null);
+  // undo/redoポップアップ（章全体対象）
+  const [undoPopup, setUndoPopup] = useState(false);
   const undoPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  function pushHistory(pageId: string, text: string) {
-    const map = pageHistoryRef.current;
-    const entry = map.get(pageId) ?? { texts: [], index: -1 };
-    // 現在位置より後の履歴は捨てる
-    const newTexts = [...entry.texts.slice(0, entry.index + 1), text].slice(-10);
-    map.set(pageId, { texts: newTexts, index: newTexts.length - 1 });
+  function pushChapterHistory(chapterId: string, before: PageSnap[], after: PageSnap[]) {
+    const map = chapterHistoryRef.current;
+    const entry = map.get(chapterId) ?? { snapshots: [], index: -1 };
+    const newSnapshots = [...entry.snapshots.slice(0, entry.index + 1), before, after].slice(-20);
+    map.set(chapterId, { snapshots: newSnapshots, index: newSnapshots.length - 1 });
   }
 
-  async function handleUndo(pageId: string) {
-    const entry = pageHistoryRef.current.get(pageId);
+  async function handleUndo() {
+    if (!editChapterId) return;
+    const entry = chapterHistoryRef.current.get(editChapterId);
     if (!entry || entry.index <= 0) return;
     const newIndex = entry.index - 1;
-    const text = entry.texts[newIndex];
-    pageHistoryRef.current.set(pageId, { ...entry, index: newIndex });
-    const page = editChapter?.pages.find((p) => p.id === pageId);
-    if (!page) return;
-    await updatePage({ ...page, text, bleedThroughCleaned: false });
-    await resetNeighborBleedFlags(page, editChapter?.pages ?? []);
+    const snapshot = entry.snapshots[newIndex];
+    chapterHistoryRef.current.set(editChapterId, { ...entry, index: newIndex });
+    const pages = editChapter?.pages ?? [];
+    await Promise.all(snapshot.map(({ pageId, text, bleedThroughCleaned }) => {
+      const page = pages.find((p) => p.id === pageId);
+      return page ? updatePage({ ...page, text, bleedThroughCleaned }) : Promise.resolve();
+    }));
     reload();
   }
 
-  async function handleRedo(pageId: string) {
-    const entry = pageHistoryRef.current.get(pageId);
-    if (!entry || entry.index >= entry.texts.length - 1) return;
+  async function handleRedo() {
+    if (!editChapterId) return;
+    const entry = chapterHistoryRef.current.get(editChapterId);
+    if (!entry || entry.index >= entry.snapshots.length - 1) return;
     const newIndex = entry.index + 1;
-    const text = entry.texts[newIndex];
-    pageHistoryRef.current.set(pageId, { ...entry, index: newIndex });
-    const page = editChapter?.pages.find((p) => p.id === pageId);
-    if (!page) return;
-    await updatePage({ ...page, text, bleedThroughCleaned: newIndex > 0 });
+    const snapshot = entry.snapshots[newIndex];
+    chapterHistoryRef.current.set(editChapterId, { ...entry, index: newIndex });
+    const pages = editChapter?.pages ?? [];
+    await Promise.all(snapshot.map(({ pageId, text, bleedThroughCleaned }) => {
+      const page = pages.find((p) => p.id === pageId);
+      return page ? updatePage({ ...page, text, bleedThroughCleaned }) : Promise.resolve();
+    }));
     reload();
   }
 
-  function handleUndoButtonClick(pageId: string) {
-    const entry = pageHistoryRef.current.get(pageId);
+  function handleUndoButtonClick() {
+    const entry = chapterHistoryRef.current.get(editChapterId ?? "");
     if (!entry || entry.index <= 0) return;
-    handleUndo(pageId);
+    handleUndo();
   }
 
-  function handleUndoButtonDoubleClick(pageId: string) {
+  function handleUndoButtonDoubleClick() {
     if (undoPopupTimerRef.current) clearTimeout(undoPopupTimerRef.current);
     const setting = selectedBook?.settings.doubleClickUndo ?? "popup";
     if (setting === "next") {
-      handleRedo(pageId);
+      handleRedo();
     } else {
-      setUndoPopup({ pageId });
-      undoPopupTimerRef.current = setTimeout(() => setUndoPopup(null), 4000);
+      setUndoPopup(true);
+      undoPopupTimerRef.current = setTimeout(() => setUndoPopup(false), 4000);
     }
   }
 
@@ -743,7 +748,6 @@ export default function Home() {
     return { lines: filtered, removed };
   }
 
-  // 章全体の映り込み除去（✦ヘッダーボタン用）
   async function handleCleanBleedThrough() {
     if (!editChapter || cleaningBleed) return;
     setCleaningBleed(true);
@@ -752,6 +756,8 @@ export default function Home() {
     const pages = [...editChapter.pages].sort((a, b) => a.pageNumber - b.pageNumber);
     let totalRemoved = 0;
     const toUpdate: Page[] = [];
+    const beforeSnap: PageSnap[] = [];
+    const afterSnap: PageSnap[] = [];
 
     for (let i = 0; i < pages.length; i++) {
       const prev = pages[i - 1];
@@ -759,8 +765,7 @@ export default function Home() {
       const next = pages[i + 1];
       if (curr.bleedThroughCleaned) continue;
 
-      const currLines = curr.text.split("\n");
-      let newLines = [...currLines];
+      let newLines = curr.text.split("\n");
       let removed = 0;
 
       if (prev) {
@@ -780,8 +785,8 @@ export default function Home() {
       const newText = newLines.join("\n").trim();
       if (removed > 0) {
         totalRemoved += removed;
-        pushHistory(curr.id, curr.text);
-        pushHistory(curr.id, newText);
+        beforeSnap.push({ pageId: curr.id, text: curr.text, bleedThroughCleaned: curr.bleedThroughCleaned });
+        afterSnap.push({ pageId: curr.id, text: newText, bleedThroughCleaned: true });
         toUpdate.push({ ...curr, text: newText, bleedThroughCleaned: true });
         if (prev && !prev.bleedThroughCleaned) {
           const already = toUpdate.find((p) => p.id === prev.id);
@@ -798,45 +803,13 @@ export default function Home() {
       }
     }
 
+    if (beforeSnap.length > 0) pushChapterHistory(editChapter.id, beforeSnap, afterSnap);
+
     await Promise.all(toUpdate.map((p) => updatePage(p)));
     await reload();
     setCleaningBleed(false);
     setCleaningBleedResult(`除去完了（${totalRemoved}箇所）`);
     setTimeout(() => setCleaningBleedResult(null), 4000);
-  }
-
-  // 1ページの映り込み除去（ナビバー✦ボタン用）
-  async function handleCleanBleedThroughPage(page: Page) {
-    if (!editChapter) return;
-    const pages = [...editChapter.pages].sort((a, b) => a.pageNumber - b.pageNumber);
-    const idx = pages.findIndex((p) => p.id === page.id);
-    const prev = pages[idx - 1];
-    const next = pages[idx + 1];
-
-    let newLines = page.text.split("\n");
-    let removed = 0;
-
-    if (prev) {
-      const prevTail = prev.text.split("\n").slice(-10);
-      const { lines, removed: r } = removeLinesMatchingNeighbor(newLines.slice(0, 10), prevTail);
-      newLines = [...lines, ...newLines.slice(10)];
-      removed += r;
-    }
-    if (next) {
-      const nextHead = next.text.split("\n").slice(0, 10);
-      const tailStart = Math.max(0, newLines.length - 10);
-      const { lines, removed: r } = removeLinesMatchingNeighbor(newLines.slice(tailStart), nextHead);
-      newLines = [...newLines.slice(0, tailStart), ...lines];
-      removed += r;
-    }
-
-    const newText = newLines.join("\n").trim();
-    pushHistory(page.id, page.text);
-    pushHistory(page.id, newText);
-    await updatePage({ ...page, text: newText, bleedThroughCleaned: true });
-    if (prev) await updatePage({ ...prev, bleedThroughCleaned: true });
-    if (next) await updatePage({ ...next, bleedThroughCleaned: true });
-    reload();
   }
 
   // ===== SEARCH =====
@@ -1653,22 +1626,22 @@ export default function Home() {
                         title="章全体の映り込みを除去"
                       >✦</button>
                       <button
-                        onClick={() => selectedPage && handleUndoButtonClick(selectedPage.id)}
-                        onDoubleClick={() => selectedPage && handleUndoButtonDoubleClick(selectedPage.id)}
+                        onClick={() => handleUndoButtonClick()}
+                        onDoubleClick={() => handleUndoButtonDoubleClick()}
                         className="bg-blue-600 text-white text-xs font-bold px-2.5 py-1 active:scale-95 transition-transform"
-                        title="元に戻す（ダブルクリック: 進む）"
+                        title="除去を元に戻す（ダブルクリック: 進む）"
                       >↩</button>
                     </div>
-                    {undoPopup?.pageId === selectedPage?.id && (
+                    {undoPopup && (
                       <div className="absolute top-full left-0 mt-1 z-50 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden whitespace-nowrap">
                         <button
-                          onClick={() => { handleUndo(undoPopup.pageId); setUndoPopup(null); }}
+                          onClick={() => { handleUndo(); setUndoPopup(false); }}
                           className="block w-full text-left px-4 py-2 text-xs text-gray-700 hover:bg-gray-50 active:bg-gray-100"
-                        >↩ 前に戻る</button>
+                        >↩ 前に戻る（章全体）</button>
                         <button
-                          onClick={() => { handleRedo(undoPopup.pageId); setUndoPopup(null); }}
+                          onClick={() => { handleRedo(); setUndoPopup(false); }}
                           className="block w-full text-left px-4 py-2 text-xs text-gray-700 hover:bg-gray-50 active:bg-gray-100 border-t border-gray-100"
-                        >↪ 次に進む</button>
+                        >↪ 次に進む（章全体）</button>
                       </div>
                     )}
                   </div>
