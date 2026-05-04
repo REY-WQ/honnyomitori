@@ -823,6 +823,7 @@ export default function Home() {
     setCleaningBleedResult(null);
 
     const pages = [...editChapter.pages].sort((a, b) => a.pageNumber - b.pageNumber);
+    const allCleaned = pages.every((p) => p.bleedThroughCleaned);
     let totalRemoved = 0;
     const toUpdate: Page[] = [];
     const beforeSnap: PageSnap[] = [];
@@ -831,6 +832,8 @@ export default function Home() {
     for (let i = 0; i < pages.length; i++) {
       const prev = pages[i - 1];
       const curr = pages[i];
+
+      if (!allCleaned && curr.bleedThroughCleaned) continue;
 
       let newText = curr.text;
       let changed = false;
@@ -848,7 +851,7 @@ export default function Home() {
         beforeSnap.push({ pageId: curr.id, text: curr.text, bleedThroughCleaned: curr.bleedThroughCleaned });
         afterSnap.push({ pageId: curr.id, text: newText, bleedThroughCleaned: true });
         toUpdate.push({ ...curr, text: newText, bleedThroughCleaned: true });
-      } else {
+      } else if (!curr.bleedThroughCleaned) {
         toUpdate.push({ ...curr, bleedThroughCleaned: true });
       }
     }
