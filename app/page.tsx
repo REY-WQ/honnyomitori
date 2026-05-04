@@ -686,7 +686,7 @@ export default function Home() {
   const undoPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 除去/復元結果モード
-  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; charDelta: number };
+  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPrefix: string; charDelta: number };
   type BleedResultState = { type: "clean" | "undo" | "redo"; diffs: BleedDiff[]; chapterId: string } | null;
   const [bleedResultState, setBleedResultState] = useState<BleedResultState>(null);
 
@@ -720,6 +720,7 @@ export default function Home() {
           pageId: b.pageId,
           pageNumber: pages.find((p) => p.id === b.pageId)?.pageNumber ?? 0,
           removedText: b.text,
+          removedPrefix: "",
           charDelta: b.text.length - (a?.text.length ?? 0),
         };
       }).filter((d) => d.charDelta !== 0),
@@ -749,6 +750,7 @@ export default function Home() {
           pageId: b.pageId,
           pageNumber: pages.find((p) => p.id === b.pageId)?.pageNumber ?? 0,
           removedText: b.text,
+          removedPrefix: "",
           charDelta: b.text.length - (a?.text.length ?? 0),
         };
       }).filter((d) => d.charDelta !== 0),
@@ -804,17 +806,19 @@ export default function Home() {
     return best;
   }
 
-  function removeBleedThroughHead(currText: string, prevText: string, minLcs = 15): { text: string; removed: boolean } {
+  function removeBleedThroughHead(currText: string, prevText: string, minLcs = 15): { text: string; removed: boolean; removedPrefix: string } {
     const prevWindow = splitToSentences(prevText).slice(-8).join("");
     const currSentences = splitToSentences(currText);
     const currWindow = currSentences.slice(0, 8).join("");
     const lcs = longestCommonSubstring(prevWindow, currWindow);
-    if (lcs.length < minLcs) return { text: currText, removed: false };
+    if (lcs.length < minLcs) return { text: currText, removed: false, removedPrefix: "" };
     const splicePos = lcs.posB + lcs.length;
-    const keptWindow = [...currWindow].slice(splicePos).join("");
+    const currChars = [...currWindow];
+    const removedPrefix = currChars.slice(0, splicePos).join("");
+    const keptWindow = currChars.slice(splicePos).join("");
     const rest = currSentences.slice(8).join("\n");
     const newText = (rest ? keptWindow + "\n" + rest : keptWindow).trim();
-    return { text: newText, removed: true };
+    return { text: newText, removed: true, removedPrefix };
   }
 
   async function handleCleanBleedThrough() {
@@ -828,6 +832,7 @@ export default function Home() {
     const toUpdate: Page[] = [];
     const beforeSnap: PageSnap[] = [];
     const afterSnap: PageSnap[] = [];
+    const removedPrefixes: Record<string, string> = {};
 
     for (let i = 0; i < pages.length; i++) {
       const prev = pages[i - 1];
@@ -843,6 +848,7 @@ export default function Home() {
         if (result.removed) {
           newText = result.text;
           changed = true;
+          removedPrefixes[curr.id] = result.removedPrefix;
         }
       }
 
@@ -872,6 +878,7 @@ export default function Home() {
           pageId: b.pageId,
           pageNumber: pages.find((p) => p.id === b.pageId)?.pageNumber ?? 0,
           removedText: b.text,
+          removedPrefix: removedPrefixes[b.pageId] ?? "",
           charDelta: afterSnap[i].text.length - b.text.length,
         })),
       });
@@ -1801,6 +1808,19 @@ export default function Home() {
                     </>
                   ) : (
                     <>
+                      {(() => {
+                        const bleedDiff = bleedResultState?.type === "clean" && bleedResultState.chapterId === editChapterId
+                          ? bleedResultState.diffs.find((d) => d.pageId === selectedPage.id)
+                          : null;
+                        return bleedDiff?.removedPrefix ? (
+                          <div className="mb-3 px-3 py-2 bg-orange-50 border border-orange-200 rounded-xl">
+                            <p className="text-[10px] text-orange-500 mb-1.5 font-semibold tracking-wide">✦ 除去された映り込み　　リロードで確定</p>
+                            <p className="text-sm text-orange-300 leading-relaxed whitespace-pre-wrap break-all line-through">
+                              {bleedDiff.removedPrefix}
+                            </p>
+                          </div>
+                        ) : null;
+                      })()}
                       <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
                         {selectedPage.status === "done"
                           ? (chapterSearchActive && chapterSearch.trim()
