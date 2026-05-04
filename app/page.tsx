@@ -772,28 +772,49 @@ export default function Home() {
     }
   }
 
-  function removeLinesMatchingNeighbor(targetLines: string[], neighborLines: string[]): { lines: string[]; removed: number } {
-    let removed = 0;
-    const filtered = targetLines.filter((line) => {
-      const t = line.trim();
-      if (!t || t.length < 10) return true;
-      const matched = neighborLines.some((n) => {
-        const nt = n.trim();
-        if (nt.length < 10) return false;
-        if (nt.startsWith(t) || t.startsWith(nt)) return true;
-        // 日本語は情報密度が高いため、15文字以上の共通部分文字列があれば映り込みと判定
-        const MIN = 15;
-        if (t.length >= MIN) {
-          for (let i = 0; i <= t.length - MIN; i++) {
-            if (nt.includes(t.slice(i, i + MIN))) return true;
+  function splitToSentences(text: string): string[] {
+    const results: string[] = [];
+    let current = "";
+    for (const char of text) {
+      current += char;
+      if ("。！？".includes(char) || char === "\n") {
+        if (current.trim()) results.push(current.trim());
+        current = "";
+      }
+    }
+    if (current.trim()) results.push(current.trim());
+    return results.filter((s) => s.length > 0);
+  }
+
+  function longestCommonSubstring(a: string, b: string): { length: number; posA: number; posB: number } {
+    const ca = [...a];
+    const cb = [...b];
+    let best = { length: 0, posA: -1, posB: -1 };
+    const dp: number[][] = Array.from({ length: ca.length + 1 }, () => new Array(cb.length + 1).fill(0));
+    for (let i = 1; i <= ca.length; i++) {
+      for (let j = 1; j <= cb.length; j++) {
+        if (ca[i - 1] === cb[j - 1]) {
+          dp[i][j] = dp[i - 1][j - 1] + 1;
+          if (dp[i][j] > best.length) {
+            best = { length: dp[i][j], posA: i - dp[i][j], posB: j - dp[i][j] };
           }
         }
-        return false;
-      });
-      if (matched) { removed++; return false; }
-      return true;
-    });
-    return { lines: filtered, removed };
+      }
+    }
+    return best;
+  }
+
+  function removeBleedThroughHead(currText: string, prevText: string, minLcs = 15): { text: string; removed: boolean } {
+    const prevWindow = splitToSentences(prevText).slice(-8).join("");
+    const currSentences = splitToSentences(currText);
+    const currWindow = currSentences.slice(0, 8).join("");
+    const lcs = longestCommonSubstring(prevWindow, currWindow);
+    if (lcs.length < minLcs) return { text: currText, removed: false };
+    const splicePos = lcs.posB + lcs.length;
+    const keptWindow = [...currWindow].slice(splicePos).join("");
+    const rest = currSentences.slice(8).join("\n");
+    const newText = (rest ? keptWindow + "\n" + rest : keptWindow).trim();
+    return { text: newText, removed: true };
   }
 
   async function handleCleanBleedThrough() {
@@ -810,42 +831,23 @@ export default function Home() {
     for (let i = 0; i < pages.length; i++) {
       const prev = pages[i - 1];
       const curr = pages[i];
-      const next = pages[i + 1];
-      if (curr.bleedThroughCleaned) continue;
 
-      let newLines = curr.text.split("\n");
-      let removed = 0;
+      let newText = curr.text;
+      let changed = false;
 
       if (prev) {
-        const prevTail = prev.text.split("\n").slice(-10);
-        const { lines, removed: r } = removeLinesMatchingNeighbor(newLines.slice(0, 10), prevTail);
-        newLines = [...lines, ...newLines.slice(10)];
-        removed += r;
-      }
-      if (next) {
-        const nextHead = next.text.split("\n").slice(0, 10);
-        const tailStart = Math.max(0, newLines.length - 10);
-        const { lines, removed: r } = removeLinesMatchingNeighbor(newLines.slice(tailStart), nextHead);
-        newLines = [...newLines.slice(0, tailStart), ...lines];
-        removed += r;
+        const result = removeBleedThroughHead(curr.text, prev.text);
+        if (result.removed) {
+          newText = result.text;
+          changed = true;
+        }
       }
 
-      const newText = newLines.join("\n").trim();
-      if (removed > 0) {
-        totalRemoved += removed;
+      if (changed) {
+        totalRemoved++;
         beforeSnap.push({ pageId: curr.id, text: curr.text, bleedThroughCleaned: curr.bleedThroughCleaned });
         afterSnap.push({ pageId: curr.id, text: newText, bleedThroughCleaned: true });
         toUpdate.push({ ...curr, text: newText, bleedThroughCleaned: true });
-        if (prev && !prev.bleedThroughCleaned) {
-          const already = toUpdate.find((p) => p.id === prev.id);
-          if (!already) toUpdate.push({ ...prev, bleedThroughCleaned: true });
-          else already.bleedThroughCleaned = true;
-        }
-        if (next && !next.bleedThroughCleaned) {
-          const already = toUpdate.find((p) => p.id === next.id);
-          if (!already) toUpdate.push({ ...next, bleedThroughCleaned: true });
-          else already.bleedThroughCleaned = true;
-        }
       } else {
         toUpdate.push({ ...curr, bleedThroughCleaned: true });
       }
