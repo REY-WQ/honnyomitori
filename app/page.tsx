@@ -686,7 +686,7 @@ export default function Home() {
   const undoPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 除去/復元結果モード
-  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number; isPrevUpdate?: boolean; prevNewEnd?: string };
+  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number };
   type BleedResultState = { type: "clean" | "undo" | "redo"; diffs: BleedDiff[]; chapterId: string } | null;
   const [bleedResultState, setBleedResultState] = useState<BleedResultState>(null);
 
@@ -790,17 +790,119 @@ export default function Home() {
     return results.filter((s) => s.length > 0);
   }
 
-  function longestCommonSubstring(a: string, b: string): { length: number; posA: number; posB: number } {
-    const ca = [...a];
-    const cb = [...b];
-    let best = { length: 0, posA: -1, posB: -1 };
-    const dp: number[][] = Array.from({ length: ca.length + 1 }, () => new Array(cb.length + 1).fill(0));
-    for (let i = 1; i <= ca.length; i++) {
-      for (let j = 1; j <= cb.length; j++) {
-        if (ca[i - 1] === cb[j - 1]) {
-          dp[i][j] = dp[i - 1][j - 1] + 1;
-          if (dp[i][j] > best.length) {
-            best = { length: dp[i][j], posA: i - dp[i][j], posB: j - dp[i][j] };
+  type NormalizedText = { chars: string[]; rawStart: number[]; rawEnd: number[] };
+  type FuzzyOverlap = { prevRawStart: number; currRawStart: number; currRawEnd: number; prevOverlap: string; currOverlap: string; score: number };
+
+  const OVERLAP_PREV_LOOKBACK = 1400;
+  const OVERLAP_CURR_LOOKAHEAD = 1600;
+  const OVERLAP_MIN_NORM_CHARS = 45;
+  const OVERLAP_MAX_NORM_CHARS = 900;
+  const OVERLAP_STEP_CHARS = 30;
+  const OVERLAP_LENGTH_FUZZ = 160;
+  const OVERLAP_MAX_CURR_START = 700;
+  const OVERLAP_MAX_PREV_END_BACKTRACK = 500;
+  const IGNORED_OVERLAP_CHARS = new Set([
+    ..."　、。，．・･「」『』（）()［］[]【】〈〉《》…‥—―-‐‑–_:：;；,.'\"`‘’“”!?！？",
+  ]);
+
+  function isIgnoredOverlapChar(char: string): boolean {
+    return /\s/.test(char) || IGNORED_OVERLAP_CHARS.has(char);
+  }
+
+  function normalizeForOverlap(text: string): NormalizedText {
+    const chars: string[] = [];
+    const rawStart: number[] = [];
+    const rawEnd: number[] = [];
+    let rawIndex = 0;
+    for (const rawChar of text) {
+      const start = rawIndex;
+      rawIndex += rawChar.length;
+      const normalized = rawChar.normalize("NFKC").toLowerCase();
+      for (const char of normalized) {
+        if (isIgnoredOverlapChar(char)) continue;
+        chars.push(char);
+        rawStart.push(start);
+        rawEnd.push(rawIndex);
+      }
+    }
+    return { chars, rawStart, rawEnd };
+  }
+
+  function bigramCounts(chars: string[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (let i = 0; i < chars.length - 1; i++) {
+      const key = chars[i] + chars[i + 1];
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  function bigramDice(a: string[], b: string[]): number {
+    if (a.length < 2 || b.length < 2) return 0;
+    const ac = bigramCounts(a);
+    const bc = bigramCounts(b);
+    let shared = 0;
+    for (const [key, count] of ac) shared += Math.min(count, bc.get(key) ?? 0);
+    return (2 * shared) / (a.length - 1 + b.length - 1);
+  }
+
+  function commonSubsequenceLength(a: string[], b: string[]): number {
+    let prev = new Array(b.length + 1).fill(0);
+    let curr = new Array(b.length + 1).fill(0);
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        curr[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], curr[j - 1]);
+      }
+      [prev, curr] = [curr, prev];
+      curr.fill(0);
+    }
+    return prev[b.length];
+  }
+
+  function candidateLengths(max: number): number[] {
+    const values = new Set<number>();
+    for (let n = OVERLAP_MIN_NORM_CHARS; n <= max; n += OVERLAP_STEP_CHARS) values.add(n);
+    values.add(max);
+    return [...values].filter((n) => n >= OVERLAP_MIN_NORM_CHARS).sort((a, b) => a - b);
+  }
+
+  function findFuzzyPageOverlap(prevWindow: string, currWindow: string): FuzzyOverlap | null {
+    const prevNorm = normalizeForOverlap(prevWindow);
+    const currNorm = normalizeForOverlap(currWindow);
+    const maxCurrLen = Math.min(currNorm.chars.length, OVERLAP_MAX_NORM_CHARS);
+    const maxPrevLen = Math.min(prevNorm.chars.length, OVERLAP_MAX_NORM_CHARS);
+    if (maxCurrLen < OVERLAP_MIN_NORM_CHARS || maxPrevLen < OVERLAP_MIN_NORM_CHARS) return null;
+
+    let best: (FuzzyOverlap & { normScore: number }) | null = null;
+    const maxCurrStart = Math.min(OVERLAP_MAX_CURR_START, maxCurrLen - OVERLAP_MIN_NORM_CHARS);
+    for (let currStartNorm = 0; currStartNorm <= maxCurrStart; currStartNorm += OVERLAP_STEP_CHARS) {
+      const currAvailable = maxCurrLen - currStartNorm;
+      for (const currLen of candidateLengths(currAvailable)) {
+        const currEndNorm = currStartNorm + currLen;
+        const currPart = currNorm.chars.slice(currStartNorm, currEndNorm);
+        const prevMin = Math.max(OVERLAP_MIN_NORM_CHARS, currLen - OVERLAP_LENGTH_FUZZ);
+        const prevMax = Math.min(maxPrevLen, currLen + OVERLAP_LENGTH_FUZZ);
+        const minPrevEnd = Math.max(prevMin, maxPrevLen - OVERLAP_MAX_PREV_END_BACKTRACK);
+        for (let prevEndNorm = maxPrevLen; prevEndNorm >= minPrevEnd; prevEndNorm -= OVERLAP_STEP_CHARS) {
+          for (let prevLen = prevMin; prevLen <= Math.min(prevEndNorm, prevMax); prevLen += OVERLAP_STEP_CHARS) {
+            const prevStartNorm = prevEndNorm - prevLen;
+            const prevPart = prevNorm.chars.slice(prevStartNorm, prevEndNorm);
+            const dice = bigramDice(prevPart, currPart);
+            if (dice < 0.16) continue;
+            const common = commonSubsequenceLength(prevPart, currPart);
+            const shortCoverage = common / Math.min(prevPart.length, currPart.length);
+            const longCoverage = common / Math.max(prevPart.length, currPart.length);
+            if (common < OVERLAP_MIN_NORM_CHARS || shortCoverage < 0.48 || longCoverage < 0.32) continue;
+            const lengthBonus = Math.min(Math.min(prevPart.length, currPart.length) / 360, 1) * 0.05;
+            const startPenalty = (currStartNorm / Math.max(maxCurrLen, 1)) * 0.18;
+            const endPenalty = ((maxPrevLen - prevEndNorm) / Math.max(maxPrevLen, 1)) * 0.06;
+            const score = dice * 0.38 + shortCoverage * 0.40 + longCoverage * 0.22 + lengthBonus - startPenalty - endPenalty;
+            if (score < 0.38) continue;
+            const prevRawStart = prevNorm.rawStart[prevStartNorm] ?? 0;
+            const currRawStart = currNorm.rawStart[currStartNorm] ?? 0;
+            const currRawEnd = currNorm.rawEnd[currEndNorm - 1] ?? 0;
+            const candidate = { prevRawStart, currRawStart, currRawEnd, prevOverlap: prevWindow.slice(prevRawStart), currOverlap: currWindow.slice(currRawStart, currRawEnd), score, normScore: score + Math.min(currLen, prevLen) / 10000 };
+            if (!best || candidate.normScore > best.normScore) best = candidate;
           }
         }
       }
@@ -808,40 +910,93 @@ export default function Home() {
     return best;
   }
 
-  function removeBleedThroughHead(currText: string, prevText: string, minLcs = 15): { text: string; removed: boolean; removedPre: string; lcsText: string; newPrevText: string | null; prevOldEnd: string; prevNewEnd: string } {
-    const prevSentences = splitToSentences(prevText);
-    const prevWindow = prevSentences.slice(-8).join("");
-    const currSentences = splitToSentences(currText);
-    const currWindow = currSentences.slice(0, 15).join("");
-    const lcs = longestCommonSubstring(prevWindow, currWindow);
-    if (lcs.length < minLcs) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, prevOldEnd: "", prevNewEnd: "" };
-    const prevChars = [...prevWindow];
-    const currChars = [...currWindow];
-    let splicePos = Math.min(lcs.posB + (prevChars.length - lcs.posA), currChars.length);
-    for (let iter = 0; iter < 4; iter++) {
-      if (splicePos >= currChars.length) break;
-      const tail = currChars.slice(splicePos).join("");
-      const ext = longestCommonSubstring(prevWindow, tail);
-      if (ext.length < 10 || ext.posB > 5) break;
-      const next = Math.min(splicePos + ext.posB + (prevChars.length - ext.posA), currChars.length);
-      if (next <= splicePos) break;
-      splicePos = next;
+  function joinAfterOverlap(prefix: string, suffix: string): string {
+    if (!prefix.trim()) return suffix.trim();
+    if (!suffix.trim()) return prefix.trim();
+    if (/\s$/.test(prefix) || /^\s/.test(suffix)) return (prefix + suffix).trim();
+    return `${prefix.trimEnd()}\n${suffix.trimStart()}`.trim();
+  }
+
+  function overlapSimilarity(a: string, b: string): number {
+    const an = normalizeForOverlap(a).chars;
+    const bn = normalizeForOverlap(b).chars;
+    if (an.length < 8 || bn.length < 8) return 0;
+    const common = commonSubsequenceLength(an, bn);
+    const shortCoverage = common / Math.min(an.length, bn.length);
+    const longCoverage = common / Math.max(an.length, bn.length);
+    return bigramDice(an, bn) * 0.35 + shortCoverage * 0.45 + longCoverage * 0.20;
+  }
+
+  function segmentQuality(text: string): number {
+    const normalizedLength = Math.min(normalizeForOverlap(text).chars.length, 220);
+    const hasSentenceEnd = RE_SENT_END.test(text.trim()) ? 12 : 0;
+    const replacementPenalty = (text.match(/[�□■◇◆]/g)?.length ?? 0) * 10;
+    const straySymbolPenalty = (text.match(/[|\\~^]{2,}/g)?.length ?? 0) * 8;
+    const naturalPatterns = [/できるような/g, /している/g, /されている/g, /られている/g, /ものである/g, /なのである/g, /については/g, /というのも/g, /すなわち/g, /であるから/g, /とするならば/g, /において/g, /に対して/g, /として/g, /一瞬で/g, /ではなく/g, /そうしたこと/g, /化学反応/g, /二次性質/g, /存在していた/g, /主張すること/g];
+    const brokenPatterns = [/[一-龯々]{1,4}な(視点|感覚|性質|関係|外部|内部|対象|もの)/g, /[がのをにへとでやりるか]{5,}/g, /[一-龯々]{1,4}心ではない/g, /次性質/g, /測定存能/g, /[一-龯々ぁ-んァ-ン]ー[ぁ-ん]/g, /[ァ-ンー]{3,}$/g, /そうした[でにをが]/g, /とか、[^。！？]{0,4}こと/g, /[ぁ-んァ-ン一-龯々]{2,8}$/g, /ずから/g, /がられている/g, /がりゆる/g, /与えるみ$/g];
+    const naturalBonus = naturalPatterns.reduce((sum, p) => sum + ((text.match(p)?.length ?? 0) * 12), 0);
+    const brokenPenalty = brokenPatterns.reduce((sum, p) => sum + ((text.match(p)?.length ?? 0) * 18), 0);
+    const danglingPenalty = RE_SENT_END.test(text.trim()) ? 0 : 10;
+    return normalizedLength + hasSentenceEnd + naturalBonus - replacementPenalty - straySymbolPenalty - brokenPenalty - danglingPenalty;
+  }
+
+  function chooseBetterOverlapSegment(prevSegment: string, currSegment: string): string {
+    const prevScore = segmentQuality(prevSegment);
+    const currScore = segmentQuality(currSegment);
+    if (prevScore >= currScore * 0.92 && prevScore <= currScore * 1.08) {
+      return prevSegment.length >= currSegment.length ? prevSegment : currSegment;
     }
-    const removedPre = currChars.slice(0, lcs.posB).join("");
-    const lcsText = currChars.slice(lcs.posB, splicePos).join("");
-    const keptWindow = currChars.slice(splicePos).join("");
-    const rest = currSentences.slice(15).join("\n");
-    const newText = (rest ? keptWindow + "\n" + rest : keptWindow).trim();
-    const prevOverlap = prevChars.slice(lcs.posA).join("");
-    const currOverlap = currChars.slice(lcs.posB, splicePos).join("");
+    return prevScore > currScore ? prevSegment : currSegment;
+  }
+
+  function mergeOverlapText(prevOverlap: string, currOverlap: string): string {
+    const prevSegments = splitToSentences(prevOverlap);
+    const currSegments = splitToSentences(currOverlap);
+    if (prevSegments.length === 0) return currOverlap.trim();
+    if (currSegments.length === 0) return prevOverlap.trim();
+    const merged: string[] = [];
+    let prevIndex = 0;
+    let matched = 0;
+    for (const currSegment of currSegments) {
+      let bestIndex = -1;
+      let bestScore = 0;
+      const searchEnd = Math.min(prevSegments.length, prevIndex + 7);
+      for (let i = prevIndex; i < searchEnd; i++) {
+        const score = overlapSimilarity(prevSegments[i], currSegment);
+        if (score > bestScore) { bestScore = score; bestIndex = i; }
+      }
+      if (bestIndex >= 0 && bestScore >= 0.38) {
+        for (let i = prevIndex; i < bestIndex; i++) {
+          if (segmentQuality(prevSegments[i]) >= 30) merged.push(prevSegments[i]);
+        }
+        merged.push(chooseBetterOverlapSegment(prevSegments[bestIndex], currSegment));
+        prevIndex = bestIndex + 1;
+        matched++;
+      } else if (segmentQuality(currSegment) >= 30) {
+        merged.push(currSegment);
+      }
+    }
+    if (matched === 0) {
+      return segmentQuality(currOverlap) > segmentQuality(prevOverlap) ? currOverlap.trim() : prevOverlap.trim();
+    }
+    return merged.join("").trim();
+  }
+
+  function removeBleedThroughHead(currText: string, prevText: string): { text: string; removed: boolean; removedPre: string; lcsText: string; newPrevText: string | null } {
+    const prevWindowStart = Math.max(0, prevText.length - OVERLAP_PREV_LOOKBACK);
+    const prevWindow = prevText.slice(prevWindowStart);
+    const currWindow = currText.slice(0, OVERLAP_CURR_LOOKAHEAD);
+    const overlap = findFuzzyPageOverlap(prevWindow, currWindow);
+    if (!overlap) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null };
+    const currPrefix = currText.slice(0, overlap.currRawStart);
+    const currOverlap = currText.slice(overlap.currRawStart, overlap.currRawEnd);
+    const mergedOverlap = mergeOverlapText(overlap.prevOverlap, currOverlap);
+    const keptText = joinAfterOverlap(currPrefix, currText.slice(overlap.currRawEnd));
     let newPrevText: string | null = null;
-    if (currOverlap.length > prevOverlap.length) {
-      const prevHead = prevSentences.slice(0, -8).join("\n");
-      const prevWindowPrefix = prevChars.slice(0, lcs.posA).join("");
-      const newPrevWindow = prevWindowPrefix + currOverlap;
-      newPrevText = (prevHead ? prevHead + "\n" + newPrevWindow : newPrevWindow).trim();
+    if (mergedOverlap && mergedOverlap !== overlap.prevOverlap.trim()) {
+      newPrevText = (prevText.slice(0, prevWindowStart + overlap.prevRawStart) + mergedOverlap).trim();
     }
-    return { text: newText, removed: true, removedPre, lcsText, newPrevText, prevOldEnd: prevOverlap, prevNewEnd: currOverlap };
+    return { text: keptText, removed: true, removedPre: "", lcsText: currOverlap, newPrevText };
   }
 
   async function handleCleanBleedThrough() {
@@ -857,7 +1012,6 @@ export default function Home() {
     const afterSnapMap = new Map<string, PageSnap>();
     const removedPres: Record<string, string> = {};
     const lcsTexts: Record<string, string> = {};
-    const prevNewEnds: Record<string, string> = {};
 
     for (let i = 0; i < pages.length; i++) {
       const prev = pages[i - 1];
@@ -883,8 +1037,6 @@ export default function Home() {
             const updatedPrev = { ...prevCurrent, text: result.newPrevText, bleedThroughCleaned: true };
             toUpdateMap.set(prev.id, updatedPrev);
             afterSnapMap.set(prev.id, { pageId: prev.id, text: result.newPrevText, bleedThroughCleaned: true });
-            lcsTexts[prev.id] = result.prevOldEnd;
-            prevNewEnds[prev.id] = result.prevNewEnd;
           }
         }
       }
@@ -924,8 +1076,6 @@ export default function Home() {
           removedPre: removedPres[b.pageId] ?? "",
           lcsText: lcsTexts[b.pageId] ?? "",
           charDelta: afterSnap[i].text.length - b.text.length,
-          isPrevUpdate: !!prevNewEnds[b.pageId],
-          prevNewEnd: prevNewEnds[b.pageId],
         })),
       });
     }
@@ -1163,10 +1313,10 @@ export default function Home() {
                   >
                     <p className="text-xs font-semibold text-blue-600 mb-1">ページ {diff.pageNumber}</p>
                     <p className="text-[11px] leading-relaxed line-clamp-2" style={{ color: '#2563eb', textDecoration: 'line-through' }}>
-                      {diff.isPrevUpdate ? (diff.lcsText.slice(0, 60) || diff.removedText.slice(-60)) : diff.removedText.slice(0, 60)}…
+                      {diff.removedText.slice(0, 60)}…
                     </p>
                     <p className="text-[10px] mt-1" style={{ color: '#2563eb' }}>
-                      {diff.isPrevUpdate ? "末尾を更新" : diff.charDelta > 0 ? `+${diff.charDelta}文字 復元` : `${diff.charDelta}文字 除去`}
+                      {diff.charDelta > 0 ? `+${diff.charDelta}文字 復元` : `${diff.charDelta}文字 除去`}
                     </p>
                   </div>
                 ))
@@ -1856,7 +2006,7 @@ export default function Home() {
                     <>
                       {selectedPage.status === "done" ? (() => {
                         const bleedDiff = bleedResultState?.type === "clean" && bleedResultState.chapterId === editChapterId
-                          ? bleedResultState.diffs.find((d) => d.pageId === selectedPage.id && !d.isPrevUpdate)
+                          ? bleedResultState.diffs.find((d) => d.pageId === selectedPage.id)
                           : null;
                         const mainText = chapterSearchActive && chapterSearch.trim()
                           ? renderHighlighted(selectedPage.text, chapterSearch, chapterSearchMatchIdx, chapterSearchData?.pageMatches.find((m) => m.pageId === selectedPage.id)?.startIdx ?? 0)
