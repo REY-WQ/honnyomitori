@@ -940,43 +940,30 @@ export default function Home() {
     return normalizedLength + hasSentenceEnd + naturalBonus - replacementPenalty - straySymbolPenalty - brokenPenalty - danglingPenalty;
   }
 
-  function longestCommonSuffixPrefix(prefixText: string, fullText: string): { length: number; completeEnd: number } {
-    let best = { length: 0, completeEnd: -1 };
-    for (let end = 1; end <= fullText.length; end++) {
-      const maxLen = Math.min(prefixText.length, end);
-      for (let len = maxLen; len >= 1; len--) {
-        if (prefixText.slice(prefixText.length - len) === fullText.slice(end - len, end)) {
-          if (len > best.length) best = { length: len, completeEnd: end };
-          break;
-        }
-      }
+  function longestCommonSuffixPrefix(left: string, right: string): number {
+    const max = Math.min(left.length, right.length);
+    for (let len = max; len >= 1; len--) {
+      if (left.slice(-len) === right.slice(0, len)) return len;
     }
-    return best;
+    return 0;
   }
 
-  function completeDanglingSegment(a: string, b: string): string | null {
-    const aTrim = a.trim();
-    const bTrim = b.trim();
-    if (!aTrim || !bTrim) return null;
-    const aComplete = RE_SENT_END.test(aTrim);
-    const bComplete = RE_SENT_END.test(bTrim);
-    if (aComplete === bComplete) return null;
-    const dangling = aComplete ? bTrim : aTrim;
-    const complete = aComplete ? aTrim : bTrim;
-    if (normalizeForOverlap(dangling).chars.length < 40) return null;
-    if (overlapSimilarity(dangling, complete) < 0.72) return null;
-    const dNorm = normalizeForOverlap(dangling);
-    const cNorm = normalizeForOverlap(complete);
-    const common = commonSubsequenceLength(dNorm.chars, cNorm.chars);
-    if (common / Math.max(dNorm.chars.length, 1) < 0.88) return null;
-    const danglingTail = dangling.slice(Math.max(0, dangling.length - 24));
-    const completeTailWindow = complete.slice(Math.max(0, complete.length - 80));
-    const anchor = longestCommonSuffixPrefix(danglingTail, completeTailWindow);
-    if (anchor.length < 2) return null;
-    const append = completeTailWindow.slice(anchor.completeEnd);
-    if (append.length === 0 || append.length > 12) return null;
-    if (!RE_SENT_END.test((dangling + append).trim())) return null;
-    return (dangling + append).trim();
+  function completeDanglingSegment(prevSegment: string, currSegment: string): string | null {
+    const prevTrimmed = prevSegment.trim();
+    const currTrimmed = currSegment.trim();
+    const prevComplete = RE_SENT_END.test(prevTrimmed);
+    const currComplete = RE_SENT_END.test(currTrimmed);
+    if (prevComplete === currComplete) return null;
+    const base = prevComplete ? currTrimmed : prevTrimmed;
+    const donor = prevComplete ? prevTrimmed : currTrimmed;
+    if (segmentQuality(base) + 18 < segmentQuality(donor)) return null;
+    if (overlapSimilarity(base, donor) < 0.58) return null;
+    const shared = longestCommonSuffixPrefix(base, donor);
+    if (shared < 1) return null;
+    const suffix = donor.slice(shared).trimStart();
+    if (!suffix || suffix.length > 12) return null;
+    if (!RE_SENT_END.test(suffix)) return null;
+    return (base + suffix).trim();
   }
 
   function chooseBetterOverlapSegment(prevSegment: string, currSegment: string): string {
