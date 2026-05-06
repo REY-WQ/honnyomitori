@@ -686,7 +686,7 @@ export default function Home() {
   const undoPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 除去/復元結果モード
-  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number };
+  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number; isPrevUpdate?: boolean; prevNewEnd?: string };
   type BleedResultState = { type: "clean" | "undo" | "redo"; diffs: BleedDiff[]; chapterId: string } | null;
   const [bleedResultState, setBleedResultState] = useState<BleedResultState>(null);
 
@@ -808,20 +808,40 @@ export default function Home() {
     return best;
   }
 
-  function removeBleedThroughHead(currText: string, prevText: string, minLcs = 15): { text: string; removed: boolean; removedPre: string; lcsText: string } {
-    const prevWindow = splitToSentences(prevText).slice(-8).join("");
+  function removeBleedThroughHead(currText: string, prevText: string, minLcs = 15): { text: string; removed: boolean; removedPre: string; lcsText: string; newPrevText: string | null; prevOldEnd: string; prevNewEnd: string } {
+    const prevSentences = splitToSentences(prevText);
+    const prevWindow = prevSentences.slice(-8).join("");
     const currSentences = splitToSentences(currText);
-    const currWindow = currSentences.slice(0, 8).join("");
+    const currWindow = currSentences.slice(0, 15).join("");
     const lcs = longestCommonSubstring(prevWindow, currWindow);
-    if (lcs.length < minLcs) return { text: currText, removed: false, removedPre: "", lcsText: "" };
-    const splicePos = lcs.posB + lcs.length;
+    if (lcs.length < minLcs) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, prevOldEnd: "", prevNewEnd: "" };
+    const prevChars = [...prevWindow];
     const currChars = [...currWindow];
+    let splicePos = Math.min(lcs.posB + (prevChars.length - lcs.posA), currChars.length);
+    for (let iter = 0; iter < 4; iter++) {
+      if (splicePos >= currChars.length) break;
+      const tail = currChars.slice(splicePos).join("");
+      const ext = longestCommonSubstring(prevWindow, tail);
+      if (ext.length < 10 || ext.posB > 5) break;
+      const next = Math.min(splicePos + ext.posB + (prevChars.length - ext.posA), currChars.length);
+      if (next <= splicePos) break;
+      splicePos = next;
+    }
     const removedPre = currChars.slice(0, lcs.posB).join("");
     const lcsText = currChars.slice(lcs.posB, splicePos).join("");
     const keptWindow = currChars.slice(splicePos).join("");
-    const rest = currSentences.slice(8).join("\n");
+    const rest = currSentences.slice(15).join("\n");
     const newText = (rest ? keptWindow + "\n" + rest : keptWindow).trim();
-    return { text: newText, removed: true, removedPre, lcsText };
+    const prevOverlap = prevChars.slice(lcs.posA).join("");
+    const currOverlap = currChars.slice(lcs.posB, splicePos).join("");
+    let newPrevText: string | null = null;
+    if (currOverlap.length > prevOverlap.length) {
+      const prevHead = prevSentences.slice(0, -8).join("\n");
+      const prevWindowPrefix = prevChars.slice(0, lcs.posA).join("");
+      const newPrevWindow = prevWindowPrefix + currOverlap;
+      newPrevText = (prevHead ? prevHead + "\n" + newPrevWindow : newPrevWindow).trim();
+    }
+    return { text: newText, removed: true, removedPre, lcsText, newPrevText, prevOldEnd: prevOverlap, prevNewEnd: currOverlap };
   }
 
   async function handleCleanBleedThrough() {
@@ -832,11 +852,12 @@ export default function Home() {
     const pages = [...editChapter.pages].sort((a, b) => a.pageNumber - b.pageNumber);
     const allCleaned = pages.every((p) => p.bleedThroughCleaned);
     let totalRemoved = 0;
-    const toUpdate: Page[] = [];
-    const beforeSnap: PageSnap[] = [];
-    const afterSnap: PageSnap[] = [];
+    const toUpdateMap = new Map<string, Page>();
+    const beforeSnapMap = new Map<string, PageSnap>();
+    const afterSnapMap = new Map<string, PageSnap>();
     const removedPres: Record<string, string> = {};
     const lcsTexts: Record<string, string> = {};
+    const prevNewEnds: Record<string, string> = {};
 
     for (let i = 0; i < pages.length; i++) {
       const prev = pages[i - 1];
@@ -844,28 +865,45 @@ export default function Home() {
 
       if (!allCleaned && curr.bleedThroughCleaned) continue;
 
-      let newText = curr.text;
+      let newCurrText = curr.text;
       let changed = false;
 
       if (prev) {
-        const result = removeBleedThroughHead(curr.text, prev.text);
+        const prevCurrent = toUpdateMap.get(prev.id) ?? prev;
+        const result = removeBleedThroughHead(curr.text, prevCurrent.text);
         if (result.removed) {
-          newText = result.text;
+          newCurrText = result.text;
           changed = true;
           removedPres[curr.id] = result.removedPre;
           lcsTexts[curr.id] = result.lcsText;
+          if (result.newPrevText !== null) {
+            if (!beforeSnapMap.has(prev.id)) {
+              beforeSnapMap.set(prev.id, { pageId: prev.id, text: prevCurrent.text, bleedThroughCleaned: prevCurrent.bleedThroughCleaned });
+            }
+            const updatedPrev = { ...prevCurrent, text: result.newPrevText, bleedThroughCleaned: true };
+            toUpdateMap.set(prev.id, updatedPrev);
+            afterSnapMap.set(prev.id, { pageId: prev.id, text: result.newPrevText, bleedThroughCleaned: true });
+            lcsTexts[prev.id] = result.prevOldEnd;
+            prevNewEnds[prev.id] = result.prevNewEnd;
+          }
         }
       }
 
       if (changed) {
         totalRemoved++;
-        beforeSnap.push({ pageId: curr.id, text: curr.text, bleedThroughCleaned: curr.bleedThroughCleaned });
-        afterSnap.push({ pageId: curr.id, text: newText, bleedThroughCleaned: true });
-        toUpdate.push({ ...curr, text: newText, bleedThroughCleaned: true });
+        if (!beforeSnapMap.has(curr.id)) {
+          beforeSnapMap.set(curr.id, { pageId: curr.id, text: curr.text, bleedThroughCleaned: curr.bleedThroughCleaned });
+        }
+        toUpdateMap.set(curr.id, { ...curr, text: newCurrText, bleedThroughCleaned: true });
+        afterSnapMap.set(curr.id, { pageId: curr.id, text: newCurrText, bleedThroughCleaned: true });
       } else if (!curr.bleedThroughCleaned) {
-        toUpdate.push({ ...curr, bleedThroughCleaned: true });
+        toUpdateMap.set(curr.id, { ...curr, bleedThroughCleaned: true });
       }
     }
+
+    const beforeSnap = [...beforeSnapMap.values()];
+    const afterSnap = beforeSnap.map(b => afterSnapMap.get(b.pageId)!).filter(Boolean);
+    const toUpdate = [...toUpdateMap.values()];
 
     if (beforeSnap.length > 0) pushChapterHistory(editChapter.id, beforeSnap, afterSnap);
 
@@ -886,6 +924,8 @@ export default function Home() {
           removedPre: removedPres[b.pageId] ?? "",
           lcsText: lcsTexts[b.pageId] ?? "",
           charDelta: afterSnap[i].text.length - b.text.length,
+          isPrevUpdate: !!prevNewEnds[b.pageId],
+          prevNewEnd: prevNewEnds[b.pageId],
         })),
       });
     }
@@ -1101,7 +1141,7 @@ export default function Home() {
           <>
             <div className="p-3 border-b border-gray-200">
               <div className="flex items-center justify-between mb-1.5">
-                <p className={`text-xs font-semibold uppercase tracking-wide ${bleedResultState.type === "undo" ? "text-blue-600" : "text-orange-500"}`}>
+                <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">
                   {bleedResultState.type === "undo" ? "↩ 復元結果" : bleedResultState.type === "redo" ? "↪ 再除去結果" : "✦ 除去結果"}
                 </p>
                 <button onClick={() => setBleedResultState(null)} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
@@ -1122,11 +1162,11 @@ export default function Home() {
                     className={`px-2 py-2 rounded-xl cursor-pointer mb-0.5 ${diff.pageId === selectedPageId ? "bg-blue-50 border-l-2 border-blue-500" : "hover:bg-gray-50"}`}
                   >
                     <p className="text-xs font-semibold text-blue-600 mb-1">ページ {diff.pageNumber}</p>
-                    <p className={`text-[11px] leading-relaxed line-clamp-2 ${bleedResultState.type === "undo" ? "text-green-600" : "text-gray-400 line-through"}`}>
-                      {diff.removedText.slice(0, 60)}…
+                    <p className="text-[11px] leading-relaxed line-clamp-2" style={{ color: '#2563eb', textDecoration: 'line-through' }}>
+                      {diff.isPrevUpdate ? (diff.lcsText.slice(0, 60) || diff.removedText.slice(-60)) : diff.removedText.slice(0, 60)}…
                     </p>
-                    <p className={`text-[10px] mt-1 ${diff.charDelta > 0 ? "text-green-600" : "text-orange-500"}`}>
-                      {diff.charDelta > 0 ? `+${diff.charDelta}文字 復元` : `${diff.charDelta}文字 除去`}
+                    <p className="text-[10px] mt-1" style={{ color: '#2563eb' }}>
+                      {diff.isPrevUpdate ? "末尾を更新" : diff.charDelta > 0 ? `+${diff.charDelta}文字 復元` : `${diff.charDelta}文字 除去`}
                     </p>
                   </div>
                 ))
@@ -1814,27 +1854,30 @@ export default function Home() {
                     </>
                   ) : (
                     <>
-                      <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
-                        {selectedPage.status === "done" ? (() => {
-                          const bleedDiff = bleedResultState?.type === "clean" && bleedResultState.chapterId === editChapterId
-                            ? bleedResultState.diffs.find((d) => d.pageId === selectedPage.id)
-                            : null;
-                          const pageContent = chapterSearchActive && chapterSearch.trim()
-                            ? renderHighlighted(selectedPage.text, chapterSearch, chapterSearchMatchIdx, chapterSearchData?.pageMatches.find((m) => m.pageId === selectedPage.id)?.startIdx ?? 0)
-                            : selectedPage.text;
-                          if (!bleedDiff || (!bleedDiff.removedPre && !bleedDiff.lcsText)) return pageContent;
-                          return (
-                            <>
-                              {bleedDiff.removedPre && <span className="text-yellow-500 line-through">{bleedDiff.removedPre}</span>}
-                              {bleedDiff.lcsText && <span className="text-blue-400">{bleedDiff.lcsText}</span>}
-                              {pageContent}
-                            </>
-                          );
-                        })()
-                          : selectedPage.status === "processing" ? "⟳ OCR処理中..."
+                      {selectedPage.status === "done" ? (() => {
+                        const bleedDiff = bleedResultState?.type === "clean" && bleedResultState.chapterId === editChapterId
+                          ? bleedResultState.diffs.find((d) => d.pageId === selectedPage.id && !d.isPrevUpdate)
+                          : null;
+                        const mainText = chapterSearchActive && chapterSearch.trim()
+                          ? renderHighlighted(selectedPage.text, chapterSearch, chapterSearchMatchIdx, chapterSearchData?.pageMatches.find((m) => m.pageId === selectedPage.id)?.startIdx ?? 0)
+                          : selectedPage.text;
+                        if (!bleedDiff || (!bleedDiff.removedPre && !bleedDiff.lcsText)) {
+                          return <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">{mainText}</p>;
+                        }
+                        return (
+                          <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
+                            {bleedDiff.removedPre && <span style={{ color: '#2563eb' }}>{bleedDiff.removedPre}</span>}
+                            {bleedDiff.lcsText && <span style={{ color: '#2563eb' }}>{bleedDiff.lcsText}</span>}
+                            {mainText}
+                          </p>
+                        );
+                      })() : (
+                        <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
+                          {selectedPage.status === "processing" ? "⟳ OCR処理中..."
                           : selectedPage.status === "error" ? "✕ エラーが発生しました"
                           : "⏳ 待機中"}
-                      </p>
+                        </p>
+                      )}
                       {selectedPage.status === "done" && (
                         <button
                           onClick={() => { setEditingPageId(selectedPage.id); setEditingText(selectedPage.text); }}
