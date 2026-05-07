@@ -899,62 +899,69 @@ export default function Home() {
     return [...values].filter((n) => n >= OVERLAP_MIN_NORM_CHARS).sort((a, b) => a - b);
   }
 
-  // シンプルA版：prev末尾とcurr先頭の最長共通部分文字列を1回だけDPで探す
-  // 30文字以上の連続一致があれば、その範囲をcurrから削除対象とする
-  // ループなし、スコアリングなし、閾値1つだけ
   async function findFuzzyPageOverlap(prevWindow: string, currWindow: string): Promise<FuzzyOverlap | null> {
-    const SIMPLE_WINDOW = 300;
-    const SIMPLE_MIN_LCS = 30;
-
     const prevNorm = normalizeForOverlap(prevWindow);
     const currNorm = normalizeForOverlap(currWindow);
-    const prevTailStart = Math.max(0, prevNorm.chars.length - SIMPLE_WINDOW);
-    const prevTail = prevNorm.chars.slice(prevTailStart);
-    const currHead = currNorm.chars.slice(0, Math.min(SIMPLE_WINDOW, currNorm.chars.length));
-    if (prevTail.length < SIMPLE_MIN_LCS || currHead.length < SIMPLE_MIN_LCS) return null;
+    const maxCurrLen = Math.min(currNorm.chars.length, OVERLAP_MAX_NORM_CHARS);
+    const maxPrevLen = Math.min(prevNorm.chars.length, OVERLAP_MAX_NORM_CHARS);
+    if (maxCurrLen < OVERLAP_MIN_NORM_CHARS || maxPrevLen < OVERLAP_MIN_NORM_CHARS) return null;
 
-    // 最長共通"部分文字列"（連続）の DP
-    const m = prevTail.length;
-    const n = currHead.length;
-    let bestLen = 0;
-    let bestEndPrev = 0; // prevTail 内の終端 (exclusive)
-    let bestEndCurr = 0; // currHead 内の終端 (exclusive)
-    let prevRow = new Int32Array(n + 1);
-    let currRow = new Int32Array(n + 1);
-    for (let i = 1; i <= m; i++) {
-      for (let j = 1; j <= n; j++) {
-        if (prevTail[i - 1] === currHead[j - 1]) {
-          currRow[j] = prevRow[j - 1] + 1;
-          if (currRow[j] > bestLen) {
-            bestLen = currRow[j];
-            bestEndPrev = i;
-            bestEndCurr = j;
+    // 3D化：prevEndNorm を maxPrevLen に固定（映り込みは prev の末尾から発生する前提）
+    // ループは currStartNorm × currLen × prevLen の3次元のみ
+    // prevPart bigrams のレイジーキャッシュ。キーは prevLen のみ（prevEndNorm 固定なので）
+    const prevBcCache = new Map<number, Map<string, number>>();
+    const prevEndNorm = maxPrevLen;
+
+    let best: (FuzzyOverlap & { normScore: number }) | null = null;
+    const maxCurrStart = Math.min(OVERLAP_MAX_CURR_START, maxCurrLen - OVERLAP_MIN_NORM_CHARS);
+    let lastYield = Date.now();
+    for (let currStartNorm = 0; currStartNorm <= maxCurrStart; currStartNorm += OVERLAP_STEP_CHARS) {
+      const currAvailable = maxCurrLen - currStartNorm;
+      for (const currLen of candidateLengths(currAvailable)) {
+        const currEndNorm = currStartNorm + currLen;
+        const currPart = currNorm.chars.slice(currStartNorm, currEndNorm);
+        const currBc = bigramCounts(currPart);  // currPart bigrams を (currStartNorm, currLen) ごとに1回だけ計算
+        const prevMin = Math.max(OVERLAP_MIN_NORM_CHARS, currLen - OVERLAP_LENGTH_FUZZ);
+        const prevMax = Math.min(maxPrevLen, currLen + OVERLAP_LENGTH_FUZZ);
+        for (let prevLen = prevMin; prevLen <= Math.min(prevEndNorm, prevMax); prevLen += OVERLAP_STEP_CHARS) {
+          if (Date.now() - lastYield > 16) {
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            lastYield = Date.now();
           }
-        } else {
-          currRow[j] = 0;
+          let prevBc = prevBcCache.get(prevLen);
+          if (!prevBc) {
+            const ps = prevEndNorm - prevLen;
+            const part = prevNorm.chars.slice(ps, prevEndNorm);
+            if (part.length < 2) continue;
+            prevBc = bigramCounts(part);
+            prevBcCache.set(prevLen, prevBc);
+          }
+          // bigram を再構築せず共有カウントのみで dice を計算
+          let shared = 0;
+          for (const [key, count] of prevBc) shared += Math.min(count, currBc.get(key) ?? 0);
+          const dice = (2 * shared) / (prevLen - 1 + currLen - 1);
+          if (dice < 0.16) continue;
+          // dice を通過した場合のみ prevPart スライスと LCS を実行
+          const prevStartNorm = prevEndNorm - prevLen;
+          const prevPart = prevNorm.chars.slice(prevStartNorm, prevEndNorm);
+          const common = commonSubsequenceLength(prevPart, currPart);
+          const shortCoverage = common / Math.min(prevLen, currLen);
+          const longCoverage = common / Math.max(prevLen, currLen);
+          if (common < OVERLAP_MIN_NORM_CHARS || shortCoverage < 0.48 || longCoverage < 0.32) continue;
+          const lengthBonus = Math.min(Math.min(prevLen, currLen) / 360, 1) * 0.05;
+          const startPenalty = (currStartNorm / Math.max(maxCurrLen, 1)) * 0.18;
+          // prevEndNorm を maxPrevLen 固定にしたので endPenalty は常に 0 → 削除
+          const score = dice * 0.38 + shortCoverage * 0.40 + longCoverage * 0.22 + lengthBonus - startPenalty;
+          if (score < 0.38) continue;
+          const prevRawStart = prevNorm.rawStart[prevStartNorm] ?? 0;
+          const currRawStart = currNorm.rawStart[currStartNorm] ?? 0;
+          const currRawEnd = currNorm.rawEnd[currEndNorm - 1] ?? 0;
+          const candidate = { prevRawStart, currRawStart, currRawEnd, prevOverlap: prevWindow.slice(prevRawStart), currOverlap: currWindow.slice(currRawStart, currRawEnd), score, normScore: score + Math.min(currLen, prevLen) / 10000 };
+          if (!best || candidate.normScore > best.normScore) best = candidate;
         }
       }
-      [prevRow, currRow] = [currRow, prevRow];
-      currRow.fill(0);
     }
-    if (bestLen < SIMPLE_MIN_LCS) return null;
-
-    // 正規化座標 → 生テキスト座標へ変換
-    const prevStartNormGlobal = prevTailStart + (bestEndPrev - bestLen);
-    const currStartNormGlobal = bestEndCurr - bestLen;
-    const currEndNormGlobal = bestEndCurr;
-    const prevRawStart = prevNorm.rawStart[prevStartNormGlobal] ?? 0;
-    const currRawStart = currNorm.rawStart[currStartNormGlobal] ?? 0;
-    const currRawEnd = currNorm.rawEnd[currEndNormGlobal - 1] ?? 0;
-
-    return {
-      prevRawStart,
-      currRawStart,
-      currRawEnd,
-      prevOverlap: prevWindow.slice(prevRawStart),
-      currOverlap: currWindow.slice(currRawStart, currRawEnd),
-      score: bestLen / Math.min(prevTail.length, currHead.length),
-    };
+    return best;
   }
 
   function joinAfterOverlap(prefix: string, suffix: string): string {
