@@ -871,7 +871,7 @@ export default function Home() {
     return [...values].filter((n) => n >= OVERLAP_MIN_NORM_CHARS).sort((a, b) => a - b);
   }
 
-  function findFuzzyPageOverlap(prevWindow: string, currWindow: string): FuzzyOverlap | null {
+  async function findFuzzyPageOverlap(prevWindow: string, currWindow: string): Promise<FuzzyOverlap | null> {
     const prevNorm = normalizeForOverlap(prevWindow);
     const currNorm = normalizeForOverlap(currWindow);
     const maxCurrLen = Math.min(currNorm.chars.length, OVERLAP_MAX_NORM_CHARS);
@@ -881,6 +881,7 @@ export default function Home() {
     let best: (FuzzyOverlap & { normScore: number }) | null = null;
     const maxCurrStart = Math.min(OVERLAP_MAX_CURR_START, maxCurrLen - OVERLAP_MIN_NORM_CHARS);
     for (let currStartNorm = 0; currStartNorm <= maxCurrStart; currStartNorm += OVERLAP_STEP_CHARS) {
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
       const currAvailable = maxCurrLen - currStartNorm;
       for (const currLen of candidateLengths(currAvailable)) {
         const currEndNorm = currStartNorm + currLen;
@@ -1028,11 +1029,11 @@ export default function Home() {
     return merged.join("").trim();
   }
 
-  function removeBleedThroughHead(currText: string, prevText: string): { text: string; removed: boolean; removedPre: string; lcsText: string; newPrevText: string | null; mergedOverlap: string } {
+  async function removeBleedThroughHead(currText: string, prevText: string): Promise<{ text: string; removed: boolean; removedPre: string; lcsText: string; newPrevText: string | null; mergedOverlap: string }> {
     const prevWindowStart = Math.max(0, prevText.length - OVERLAP_PREV_LOOKBACK);
     const prevWindow = prevText.slice(prevWindowStart);
     const currWindow = currText.slice(0, OVERLAP_CURR_LOOKAHEAD);
-    const overlap = findFuzzyPageOverlap(prevWindow, currWindow);
+    const overlap = await findFuzzyPageOverlap(prevWindow, currWindow);
     if (!overlap) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, mergedOverlap: "" };
     const currPrefix = currText.slice(0, overlap.currRawStart);
     const currOverlap = currText.slice(overlap.currRawStart, overlap.currRawEnd);
@@ -1067,14 +1068,13 @@ export default function Home() {
       if (!allCleaned && curr.bleedThroughCleaned) continue;
 
       setCleaningBleedResult(`解析中… p.${curr.pageNumber} / ${pages.length}`);
-      await new Promise<void>(resolve => setTimeout(resolve, 0));
 
       let newCurrText = curr.text;
       let changed = false;
 
       if (prev) {
         const prevCurrent = toUpdateMap.get(prev.id) ?? prev;
-        const result = removeBleedThroughHead(curr.text, prevCurrent.text);
+        const result = await removeBleedThroughHead(curr.text, prevCurrent.text);
         if (result.removed) {
           newCurrText = result.text;
           changed = true;
