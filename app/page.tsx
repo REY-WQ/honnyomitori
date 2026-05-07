@@ -1046,12 +1046,16 @@ export default function Home() {
     return prevScore > currScore ? prevSegment : currSegment;
   }
 
-  function mergeOverlapText(prevOverlap: string, currOverlap: string): string {
+  // 戻り値:
+  //   merged   = prev に書き戻すマージ済みテキスト（既存の役割）
+  //   currKept = curr に残すべき文（prevとマッチせず curr 由来と判定された文の連結）
+  function mergeOverlapText(prevOverlap: string, currOverlap: string): { merged: string; currKept: string } {
     const prevSegments = splitToSentences(prevOverlap);
     const currSegments = splitToSentences(currOverlap);
-    if (prevSegments.length === 0) return currOverlap.trim();
-    if (currSegments.length === 0) return prevOverlap.trim();
+    if (prevSegments.length === 0) return { merged: currOverlap.trim(), currKept: "" };
+    if (currSegments.length === 0) return { merged: prevOverlap.trim(), currKept: "" };
     const merged: string[] = [];
+    const currKeptList: string[] = [];
     let prevIndex = 0;
     let matched = 0;
     for (const currSegment of currSegments) {
@@ -1063,20 +1067,28 @@ export default function Home() {
         if (score > bestScore) { bestScore = score; bestIndex = i; }
       }
       if (bestIndex >= 0 && bestScore >= 0.38) {
+        // マッチ：prevにマージ書き戻し（curr側からは削除）
         for (let i = prevIndex; i < bestIndex; i++) {
           if (segmentQuality(prevSegments[i]) >= 30) merged.push(prevSegments[i]);
         }
         merged.push(chooseBetterOverlapSegment(prevSegments[bestIndex], currSegment));
         prevIndex = bestIndex + 1;
         matched++;
-      } else if (segmentQuality(currSegment) >= 30) {
-        merged.push(currSegment);
+      } else {
+        // 非マッチ：curr由来の本物。curr側に残す。
+        currKeptList.push(currSegment);
+        // prevにも品質高ければ追記（既存挙動維持）
+        if (segmentQuality(currSegment) >= 30) merged.push(currSegment);
       }
     }
     if (matched === 0) {
-      return segmentQuality(currOverlap) > segmentQuality(prevOverlap) ? currOverlap.trim() : prevOverlap.trim();
+      // 文単位で何もマッチしなかった場合：旧フォールバック（curr側削除＝既存挙動）
+      return {
+        merged: segmentQuality(currOverlap) > segmentQuality(prevOverlap) ? currOverlap.trim() : prevOverlap.trim(),
+        currKept: "",
+      };
     }
-    return merged.join("").trim();
+    return { merged: merged.join("").trim(), currKept: currKeptList.join("").trim() };
   }
 
   async function removeBleedThroughHead(currText: string, prevText: string): Promise<{ text: string; removed: boolean; removedPre: string; lcsText: string; newPrevText: string | null; mergedOverlap: string }> {
@@ -1087,8 +1099,10 @@ export default function Home() {
     if (!overlap) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, mergedOverlap: "" };
     const currPrefix = currText.slice(0, overlap.currRawStart);
     const currOverlap = currText.slice(overlap.currRawStart, overlap.currRawEnd);
-    const mergedOverlap = mergeOverlapText(overlap.prevOverlap, currOverlap);
-    const keptText = joinAfterOverlap(currPrefix, currText.slice(overlap.currRawEnd));
+    const { merged: mergedOverlap, currKept } = mergeOverlapText(overlap.prevOverlap, currOverlap);
+    // currKept = prevとマッチしなかった curr 由来の文。これを curr の overlap 範囲に残す。
+    const currMidKept = currKept ? joinAfterOverlap(currPrefix, currKept) : currPrefix;
+    const keptText = joinAfterOverlap(currMidKept, currText.slice(overlap.currRawEnd));
     let newPrevText: string | null = null;
     if (mergedOverlap && mergedOverlap !== overlap.prevOverlap.trim()) {
       newPrevText = (prevText.slice(0, prevWindowStart + overlap.prevRawStart) + mergedOverlap).trim();
