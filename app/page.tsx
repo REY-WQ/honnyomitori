@@ -130,6 +130,36 @@ export default function Home() {
     reload();
   }, [reload]);
 
+  // ページ読み込み時に localStorage の確認待ち映り込み除去を自動復元
+  useEffect(() => {
+    if (loading || autoRevertCheckedRef.current || books.length === 0) return;
+    autoRevertCheckedRef.current = true;
+    const raw = localStorage.getItem("bleed_pending_confirm");
+    if (!raw) return;
+    try {
+      const data: { phase: "pending" | "confirmed"; beforeSnap?: PageSnap[]; afterSnap: PageSnap[] } = JSON.parse(raw);
+      // pending → 除去前に戻す / confirmed → 除去後に戻す（↩ から復帰）
+      const snapToRevert = data.phase === "confirmed" ? data.afterSnap : (data.beforeSnap ?? []);
+      const allPages = books.flatMap((b) => b.chapters.flatMap((c) => c.pages));
+      const toRevert = snapToRevert
+        .map((snap) => {
+          const page = allPages.find((p) => p.id === snap.pageId);
+          return page ? { ...page, text: snap.text, bleedThroughCleaned: snap.bleedThroughCleaned } : null;
+        })
+        .filter((p): p is Page => p !== null);
+      if (toRevert.length > 0) {
+        Promise.all(toRevert.map((p) => updatePage(p))).then(() => {
+          localStorage.removeItem("bleed_pending_confirm");
+          reload();
+        });
+      } else {
+        localStorage.removeItem("bleed_pending_confirm");
+      }
+    } catch {
+      localStorage.removeItem("bleed_pending_confirm");
+    }
+  }, [loading, books]);
+
   // Recover stuck "processing" pages on mount
   useEffect(() => {
     async function recoverProcessingPages() {
@@ -307,7 +337,6 @@ export default function Home() {
 
   useEffect(() => {
     setBleedResultState(null);
-    setBleedPending(null);
   }, [editChapterId]);
 
   // ===== BOOK ACTIONS =====
@@ -687,13 +716,13 @@ export default function Home() {
   const undoPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 除去/復元結果モード
-  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number; isPrevUpdate?: boolean; newText?: string };
+  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number; isPrevUpdate?: boolean };
   type BleedResultState = { type: "clean" | "undo" | "redo"; diffs: BleedDiff[]; chapterId: string } | null;
   const [bleedResultState, setBleedResultState] = useState<BleedResultState>(null);
 
-  // 決定前の保留データ
-  type BleedPendingState = { toUpdate: Page[]; beforeSnap: PageSnap[]; afterSnap: PageSnap[]; chapterId: string; totalRemoved: number } | null;
-  const [bleedPending, setBleedPending] = useState<BleedPendingState>(null);
+  // localStorage に「確認待ち」が残っているかどうか
+  const [hasBleedPendingConfirm, setHasBleedPendingConfirm] = useState(false);
+  const autoRevertCheckedRef = useRef(false);
 
   function pushChapterHistory(chapterId: string, before: PageSnap[], after: PageSnap[]) {
     const map = chapterHistoryRef.current;
@@ -878,6 +907,10 @@ export default function Home() {
     const maxPrevLen = Math.min(prevNorm.chars.length, OVERLAP_MAX_NORM_CHARS);
     if (maxCurrLen < OVERLAP_MIN_NORM_CHARS || maxPrevLen < OVERLAP_MIN_NORM_CHARS) return null;
 
+    // prevPart bigrams のレイジーキャッシュ（初回アクセス時のみ計算、以降は再利用）
+    // キーは実際のループ値 `${prevEndNorm}:${prevLen}` を使用するためキーずれが起きない
+    const prevBcCache = new Map<string, Map<string, number>>();
+
     let best: (FuzzyOverlap & { normScore: number }) | null = null;
     const maxCurrStart = Math.min(OVERLAP_MAX_CURR_START, maxCurrLen - OVERLAP_MIN_NORM_CHARS);
     let lastYield = Date.now();
@@ -886,24 +919,38 @@ export default function Home() {
       for (const currLen of candidateLengths(currAvailable)) {
         const currEndNorm = currStartNorm + currLen;
         const currPart = currNorm.chars.slice(currStartNorm, currEndNorm);
+        const currBc = bigramCounts(currPart);  // currPart bigrams を (currStartNorm, currLen) ごとに1回だけ計算
         const prevMin = Math.max(OVERLAP_MIN_NORM_CHARS, currLen - OVERLAP_LENGTH_FUZZ);
         const prevMax = Math.min(maxPrevLen, currLen + OVERLAP_LENGTH_FUZZ);
         const minPrevEnd = Math.max(prevMin, maxPrevLen - OVERLAP_MAX_PREV_END_BACKTRACK);
         for (let prevEndNorm = maxPrevLen; prevEndNorm >= minPrevEnd; prevEndNorm -= OVERLAP_STEP_CHARS) {
-          if (Date.now() - lastYield > 16) {
-            await new Promise<void>(resolve => setTimeout(resolve, 0));
-            lastYield = Date.now();
-          }
           for (let prevLen = prevMin; prevLen <= Math.min(prevEndNorm, prevMax); prevLen += OVERLAP_STEP_CHARS) {
+            if (Date.now() - lastYield > 16) {
+              await new Promise<void>(resolve => setTimeout(resolve, 0));
+              lastYield = Date.now();
+            }
+            const cacheKey = `${prevEndNorm}:${prevLen}`;
+            let prevBc = prevBcCache.get(cacheKey);
+            if (!prevBc) {
+              const ps = prevEndNorm - prevLen;
+              const part = prevNorm.chars.slice(ps, prevEndNorm);
+              if (part.length < 2) continue;
+              prevBc = bigramCounts(part);
+              prevBcCache.set(cacheKey, prevBc);
+            }
+            // bigram を再構築せず共有カウントのみで dice を計算
+            let shared = 0;
+            for (const [key, count] of prevBc) shared += Math.min(count, currBc.get(key) ?? 0);
+            const dice = (2 * shared) / (prevLen - 1 + currLen - 1);
+            if (dice < 0.16) continue;
+            // dice を通過した場合のみ prevPart スライスと LCS を実行
             const prevStartNorm = prevEndNorm - prevLen;
             const prevPart = prevNorm.chars.slice(prevStartNorm, prevEndNorm);
-            const dice = bigramDice(prevPart, currPart);
-            if (dice < 0.16) continue;
             const common = commonSubsequenceLength(prevPart, currPart);
-            const shortCoverage = common / Math.min(prevPart.length, currPart.length);
-            const longCoverage = common / Math.max(prevPart.length, currPart.length);
+            const shortCoverage = common / Math.min(prevLen, currLen);
+            const longCoverage = common / Math.max(prevLen, currLen);
             if (common < OVERLAP_MIN_NORM_CHARS || shortCoverage < 0.48 || longCoverage < 0.32) continue;
-            const lengthBonus = Math.min(Math.min(prevPart.length, currPart.length) / 360, 1) * 0.05;
+            const lengthBonus = Math.min(Math.min(prevLen, currLen) / 360, 1) * 0.05;
             const startPenalty = (currStartNorm / Math.max(maxCurrLen, 1)) * 0.18;
             const endPenalty = ((maxPrevLen - prevEndNorm) / Math.max(maxPrevLen, 1)) * 0.06;
             const score = dice * 0.38 + shortCoverage * 0.40 + longCoverage * 0.22 + lengthBonus - startPenalty - endPenalty;
@@ -1117,7 +1164,13 @@ export default function Home() {
     setCleaningBleedResult(null);
 
     if (beforeSnap.length > 0) {
-      setBleedPending({ toUpdate, beforeSnap, afterSnap, chapterId: editChapter.id, totalRemoved });
+      // DB に即時書き込み（旧フロー）
+      pushChapterHistory(editChapter.id, beforeSnap, afterSnap);
+      await Promise.all(toUpdate.map((p) => updatePage(p)));
+      // 決定が押されるまで localStorage に保存 → 押されなければリロード時に原文へ自動復元
+      localStorage.setItem("bleed_pending_confirm", JSON.stringify({ phase: "pending", chapterId: editChapter.id, beforeSnap, afterSnap }));
+      setHasBleedPendingConfirm(true);
+      await reload();
       setBleedResultState({
         type: "clean",
         chapterId: editChapter.id,
@@ -1129,23 +1182,14 @@ export default function Home() {
           lcsText: lcsTexts[b.pageId] ?? "",
           charDelta: afterSnap[i].text.length - b.text.length,
           isPrevUpdate: prevUpdateIds.has(b.pageId),
-          newText: afterSnap[i].text,
         })),
       });
+      setCleaningBleedResult(`除去完了（${totalRemoved}箇所）`);
+      setTimeout(() => setCleaningBleedResult(null), 4000);
     } else {
       setCleaningBleedResult("映り込みは検出されませんでした");
       setTimeout(() => setCleaningBleedResult(null), 3000);
     }
-  }
-
-  async function handleConfirmBleedThrough() {
-    if (!bleedPending) return;
-    pushChapterHistory(bleedPending.chapterId, bleedPending.beforeSnap, bleedPending.afterSnap);
-    await Promise.all(bleedPending.toUpdate.map((p) => updatePage(p)));
-    await reload();
-    setBleedPending(null);
-    setCleaningBleedResult(`除去完了（${bleedPending.totalRemoved}箇所）`);
-    setTimeout(() => setCleaningBleedResult(null), 4000);
   }
 
   // ===== SEARCH =====
@@ -1359,20 +1403,32 @@ export default function Home() {
             <div className="p-3 border-b border-gray-200">
               <div className="flex items-center justify-between mb-1.5">
                 <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">
-                  {bleedResultState.type === "undo" ? "↩ 復元結果" : bleedResultState.type === "redo" ? "↪ 再除去結果" : "✦ 除去プレビュー"}
+                  {bleedResultState.type === "undo" ? "↩ 復元結果" : bleedResultState.type === "redo" ? "↪ 再除去結果" : "✦ 除去結果"}
                 </p>
-                <button onClick={() => { setBleedResultState(null); setBleedPending(null); }} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
+                <button onClick={() => setBleedResultState(null)} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
               </div>
               <p className="text-xs text-gray-500 mb-2">
                 {editChapter?.name} の {bleedResultState.diffs.length}ページ
-                {bleedResultState.type === "undo" ? "を復元" : bleedResultState.type === "redo" ? "を再除去" : "に映り込みを検出"}
+                {bleedResultState.type === "undo" ? "を復元" : bleedResultState.type === "redo" ? "を再除去" : "に映り込みを検出・除去"}
               </p>
-              {bleedPending && bleedPending.chapterId === editChapterId && (
+              {bleedResultState.type === "clean" && hasBleedPendingConfirm && (
                 <button
-                  onClick={() => handleConfirmBleedThrough()}
+                  onClick={() => {
+                    // pending → confirmed へ移行（↩ 後リロードで除去後状態に戻れるよう afterSnap を保持）
+                    const raw = localStorage.getItem("bleed_pending_confirm");
+                    if (raw) {
+                      try {
+                        const data = JSON.parse(raw);
+                        localStorage.setItem("bleed_pending_confirm", JSON.stringify({ phase: "confirmed", afterSnap: data.afterSnap }));
+                      } catch {
+                        localStorage.removeItem("bleed_pending_confirm");
+                      }
+                    }
+                    setHasBleedPendingConfirm(false);
+                  }}
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg px-3 py-1.5 active:scale-95 transition-transform"
                 >
-                  決定（DB に書き込む）
+                  決定
                 </button>
               )}
             </div>
@@ -2005,7 +2061,7 @@ export default function Home() {
                     <div className="flex rounded-xl overflow-hidden border border-gray-200">
                       <button
                         onClick={() => handleCleanBleedThrough()}
-                        disabled={cleaningBleed || !!bleedPending || (editChapter?.pages.length ?? 0) === 0}
+                        disabled={cleaningBleed || (editChapter?.pages.length ?? 0) === 0}
                         className="bg-orange-50 border-r border-orange-200 text-orange-500 text-xs font-bold px-2.5 py-1 active:scale-95 transition-transform disabled:opacity-40"
                         title="章全体の映り込みを除去"
                       >✦</button>
@@ -2083,7 +2139,7 @@ export default function Home() {
                         const bleedDiff = bleedResultState?.type === "clean" && bleedResultState.chapterId === editChapterId
                           ? bleedResultState.diffs.find((d) => d.pageId === selectedPage.id)
                           : null;
-                        const baseText = bleedDiff?.newText ?? selectedPage.text;
+                        const baseText = selectedPage.text;
                         const mainText = chapterSearchActive && chapterSearch.trim()
                           ? renderHighlighted(baseText, chapterSearch, chapterSearchMatchIdx, chapterSearchData?.pageMatches.find((m) => m.pageId === selectedPage.id)?.startIdx ?? 0)
                           : baseText;
