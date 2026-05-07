@@ -307,6 +307,7 @@ export default function Home() {
 
   useEffect(() => {
     setBleedResultState(null);
+    setBleedPending(null);
   }, [editChapterId]);
 
   // ===== BOOK ACTIONS =====
@@ -686,9 +687,13 @@ export default function Home() {
   const undoPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 除去/復元結果モード
-  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number; isPrevUpdate?: boolean };
+  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number; isPrevUpdate?: boolean; newText?: string };
   type BleedResultState = { type: "clean" | "undo" | "redo"; diffs: BleedDiff[]; chapterId: string } | null;
   const [bleedResultState, setBleedResultState] = useState<BleedResultState>(null);
+
+  // 決定前の保留データ
+  type BleedPendingState = { toUpdate: Page[]; beforeSnap: PageSnap[]; afterSnap: PageSnap[]; chapterId: string; totalRemoved: number } | null;
+  const [bleedPending, setBleedPending] = useState<BleedPendingState>(null);
 
   function pushChapterHistory(chapterId: string, before: PageSnap[], after: PageSnap[]) {
     const map = chapterHistoryRef.current;
@@ -1101,15 +1106,10 @@ export default function Home() {
     const afterSnap = beforeSnap.map(b => afterSnapMap.get(b.pageId)!).filter(Boolean);
     const toUpdate = [...toUpdateMap.values()];
 
-    if (beforeSnap.length > 0) pushChapterHistory(editChapter.id, beforeSnap, afterSnap);
-
-    await Promise.all(toUpdate.map((p) => updatePage(p)));
-    await reload();
     setCleaningBleed(false);
-    setCleaningBleedResult(`除去完了（${totalRemoved}箇所）`);
-    setTimeout(() => setCleaningBleedResult(null), 4000);
 
     if (beforeSnap.length > 0) {
+      setBleedPending({ toUpdate, beforeSnap, afterSnap, chapterId: editChapter.id, totalRemoved });
       setBleedResultState({
         type: "clean",
         chapterId: editChapter.id,
@@ -1121,9 +1121,23 @@ export default function Home() {
           lcsText: lcsTexts[b.pageId] ?? "",
           charDelta: afterSnap[i].text.length - b.text.length,
           isPrevUpdate: prevUpdateIds.has(b.pageId),
+          newText: afterSnap[i].text,
         })),
       });
+    } else {
+      setCleaningBleedResult("映り込みは検出されませんでした");
+      setTimeout(() => setCleaningBleedResult(null), 3000);
     }
+  }
+
+  async function handleConfirmBleedThrough() {
+    if (!bleedPending) return;
+    pushChapterHistory(bleedPending.chapterId, bleedPending.beforeSnap, bleedPending.afterSnap);
+    await Promise.all(bleedPending.toUpdate.map((p) => updatePage(p)));
+    await reload();
+    setBleedPending(null);
+    setCleaningBleedResult(`除去完了（${bleedPending.totalRemoved}箇所）`);
+    setTimeout(() => setCleaningBleedResult(null), 4000);
   }
 
   // ===== SEARCH =====
@@ -1337,14 +1351,22 @@ export default function Home() {
             <div className="p-3 border-b border-gray-200">
               <div className="flex items-center justify-between mb-1.5">
                 <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">
-                  {bleedResultState.type === "undo" ? "↩ 復元結果" : bleedResultState.type === "redo" ? "↪ 再除去結果" : "✦ 除去結果"}
+                  {bleedResultState.type === "undo" ? "↩ 復元結果" : bleedResultState.type === "redo" ? "↪ 再除去結果" : "✦ 除去プレビュー"}
                 </p>
-                <button onClick={() => setBleedResultState(null)} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
+                <button onClick={() => { setBleedResultState(null); setBleedPending(null); }} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
               </div>
-              <p className="text-xs text-gray-500">
-                {editChapter?.name} の {bleedResultState.diffs.length}ページを
-                {bleedResultState.type === "undo" ? "復元" : "修正"}しました
+              <p className="text-xs text-gray-500 mb-2">
+                {editChapter?.name} の {bleedResultState.diffs.length}ページ
+                {bleedResultState.type === "undo" ? "を復元" : bleedResultState.type === "redo" ? "を再除去" : "に映り込みを検出"}
               </p>
+              {bleedPending && bleedPending.chapterId === editChapterId && (
+                <button
+                  onClick={() => handleConfirmBleedThrough()}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg px-3 py-1.5 active:scale-95 transition-transform"
+                >
+                  決定（DB に書き込む）
+                </button>
+              )}
             </div>
             <div className="flex-1 overflow-y-auto p-1.5">
               {bleedResultState.diffs.length === 0 ? (
@@ -1975,7 +1997,7 @@ export default function Home() {
                     <div className="flex rounded-xl overflow-hidden border border-gray-200">
                       <button
                         onClick={() => handleCleanBleedThrough()}
-                        disabled={cleaningBleed || (editChapter?.pages.length ?? 0) === 0}
+                        disabled={cleaningBleed || !!bleedPending || (editChapter?.pages.length ?? 0) === 0}
                         className="bg-orange-50 border-r border-orange-200 text-orange-500 text-xs font-bold px-2.5 py-1 active:scale-95 transition-transform disabled:opacity-40"
                         title="章全体の映り込みを除去"
                       >✦</button>
@@ -2053,9 +2075,10 @@ export default function Home() {
                         const bleedDiff = bleedResultState?.type === "clean" && bleedResultState.chapterId === editChapterId
                           ? bleedResultState.diffs.find((d) => d.pageId === selectedPage.id)
                           : null;
+                        const baseText = bleedDiff?.newText ?? selectedPage.text;
                         const mainText = chapterSearchActive && chapterSearch.trim()
-                          ? renderHighlighted(selectedPage.text, chapterSearch, chapterSearchMatchIdx, chapterSearchData?.pageMatches.find((m) => m.pageId === selectedPage.id)?.startIdx ?? 0)
-                          : selectedPage.text;
+                          ? renderHighlighted(baseText, chapterSearch, chapterSearchMatchIdx, chapterSearchData?.pageMatches.find((m) => m.pageId === selectedPage.id)?.startIdx ?? 0)
+                          : baseText;
                         if (!bleedDiff || (!bleedDiff.removedPre && !bleedDiff.lcsText)) {
                           return <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">{mainText}</p>;
                         }
