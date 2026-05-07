@@ -708,7 +708,7 @@ export default function Home() {
   const [cleaningBleedResult, setCleaningBleedResult] = useState<string | null>(null);
 
   // 章単位スナップショット履歴: chapterId → { snapshots: [{pageId, text, bleedThroughCleaned}][], index }
-  type PageSnap = { pageId: string; text: string; bleedThroughCleaned: boolean };
+  type PageSnap = { pageId: string; text: string; bleedThroughCleaned: boolean; isPrevUpdate?: boolean };
   const chapterHistoryRef = useRef<Map<string, { snapshots: PageSnap[][]; index: number }>>(new Map());
 
   // undo/redoポップアップ（章全体対象）
@@ -757,6 +757,7 @@ export default function Home() {
           removedPre: "",
           lcsText: "",
           charDelta: b.text.length - (a?.text.length ?? 0),
+          isPrevUpdate: b.isPrevUpdate,
         };
       }).filter((d) => d.charDelta !== 0),
     });
@@ -788,6 +789,7 @@ export default function Home() {
           removedPre: "",
           lcsText: "",
           charDelta: b.text.length - (a?.text.length ?? 0),
+          isPrevUpdate: b.isPrevUpdate,
         };
       }).filter((d) => d.charDelta !== 0),
     });
@@ -1038,6 +1040,16 @@ export default function Home() {
   function chooseBetterOverlapSegment(prevSegment: string, currSegment: string): string {
     const completed = completeDanglingSegment(prevSegment, currSegment);
     if (completed) return completed;
+    // 両方とも文末で切れてる断片の場合、片方が他方を完全に含むなら長い方を採用
+    // （ページ境界で同じ内容が片方は短く片方は長く OCR された場合、長い方がより多くの本文を保持しているはず）
+    const prevTrim = prevSegment.trim();
+    const currTrim = currSegment.trim();
+    const prevIncomplete = !RE_SENT_END.test(prevTrim);
+    const currIncomplete = !RE_SENT_END.test(currTrim);
+    if (prevIncomplete && currIncomplete) {
+      if (currTrim.length > prevTrim.length && currTrim.startsWith(prevTrim)) return currTrim;
+      if (prevTrim.length > currTrim.length && prevTrim.startsWith(currTrim)) return prevTrim;
+    }
     const prevScore = segmentQuality(prevSegment);
     const currScore = segmentQuality(currSegment);
     if (prevScore >= currScore * 0.92 && prevScore <= currScore * 1.08) {
@@ -1049,13 +1061,16 @@ export default function Home() {
   // 戻り値:
   //   merged   = prev に書き戻すマージ済みテキスト（既存の役割）
   //   currKept = curr に残すべき文（prevとマッチせず curr 由来と判定された文の連結）
-  function mergeOverlapText(prevOverlap: string, currOverlap: string): { merged: string; currKept: string } {
+  // prev 側に書き戻すマージ済みテキストを生成する。
+  // 原則：「重なりがあるなら、その周辺の独立断片もまとめて削除」
+  //       prev 側 = 重なりの開始位置以降をすべて mergedOverlap で置き換える
+  //       curr 側 = 重なりの終了位置までをすべて削除（呼び出し側で対応）
+  function mergeOverlapText(prevOverlap: string, currOverlap: string): string {
     const prevSegments = splitToSentences(prevOverlap);
     const currSegments = splitToSentences(currOverlap);
-    if (prevSegments.length === 0) return { merged: currOverlap.trim(), currKept: "" };
-    if (currSegments.length === 0) return { merged: prevOverlap.trim(), currKept: "" };
+    if (prevSegments.length === 0) return currOverlap.trim();
+    if (currSegments.length === 0) return prevOverlap.trim();
     const merged: string[] = [];
-    const currKeptList: string[] = [];
     let prevIndex = 0;
     let matched = 0;
     for (const currSegment of currSegments) {
@@ -1067,28 +1082,30 @@ export default function Home() {
         if (score > bestScore) { bestScore = score; bestIndex = i; }
       }
       if (bestIndex >= 0 && bestScore >= 0.38) {
-        // マッチ：prevにマージ書き戻し（curr側からは削除）
+        // マッチ：prevとcurrのうち品質の良い方をprevに書き戻す
         for (let i = prevIndex; i < bestIndex; i++) {
           if (segmentQuality(prevSegments[i]) >= 30) merged.push(prevSegments[i]);
         }
         merged.push(chooseBetterOverlapSegment(prevSegments[bestIndex], currSegment));
         prevIndex = bestIndex + 1;
         matched++;
-      } else {
-        // 非マッチ：curr由来の本物。curr側に残す。
-        currKeptList.push(currSegment);
-        // prevにも品質高ければ追記（既存挙動維持）
-        if (segmentQuality(currSegment) >= 30) merged.push(currSegment);
       }
+      // 非マッチの curr 文は無視（prevに追記しない＝二重化バグ回避）
     }
     if (matched === 0) {
-      // 文単位で何もマッチしなかった場合：旧フォールバック（curr側削除＝既存挙動）
-      return {
-        merged: segmentQuality(currOverlap) > segmentQuality(prevOverlap) ? currOverlap.trim() : prevOverlap.trim(),
-        currKept: "",
-      };
+      return segmentQuality(currOverlap) > segmentQuality(prevOverlap) ? currOverlap.trim() : prevOverlap.trim();
     }
-    return { merged: merged.join("").trim(), currKept: currKeptList.join("").trim() };
+    return merged.join("").trim();
+  }
+
+  // 指定位置より前にある最後の文末記号(。！？\n)の直後を返す。
+  // prevRawStart が文の途中を指していたとき、文境界まで遡ってカットするための補助関数。
+  function findSentenceBoundaryBefore(text: string, position: number): number {
+    for (let i = position - 1; i >= 0; i--) {
+      const c = text[i];
+      if (c === "。" || c === "！" || c === "？" || c === "\n") return i + 1;
+    }
+    return 0;
   }
 
   async function removeBleedThroughHead(currText: string, prevText: string): Promise<{ text: string; removed: boolean; removedPre: string; lcsText: string; newPrevText: string | null; mergedOverlap: string }> {
@@ -1097,17 +1114,21 @@ export default function Home() {
     const currWindow = currText.slice(0, OVERLAP_CURR_LOOKAHEAD);
     const overlap = await findFuzzyPageOverlap(prevWindow, currWindow);
     if (!overlap) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, mergedOverlap: "" };
-    const currPrefix = currText.slice(0, overlap.currRawStart);
+    // 原則：重なりがあるなら、その周辺の独立断片もまとめて削除
+    //   curr 側：先頭 〜 重なり終端 までをすべて削除（重なり前の独立断片も映り込みとみなす）
+    //   prev 側：重なり開始以降を mergedOverlap で上書き（重なり後の独立断片も映り込みとみなす）
+    // ただし prev 側のカット位置は文境界まで遡る（途中切断による残骸防止）
+    const prevSentenceStart = findSentenceBoundaryBefore(prevWindow, overlap.prevRawStart);
+    const expandedPrevOverlap = prevWindow.slice(prevSentenceStart);
     const currOverlap = currText.slice(overlap.currRawStart, overlap.currRawEnd);
-    const { merged: mergedOverlap, currKept } = mergeOverlapText(overlap.prevOverlap, currOverlap);
-    // currKept = prevとマッチしなかった curr 由来の文。これを curr の overlap 範囲に残す。
-    const currMidKept = currKept ? joinAfterOverlap(currPrefix, currKept) : currPrefix;
-    const keptText = joinAfterOverlap(currMidKept, currText.slice(overlap.currRawEnd));
+    const removedPre = currText.slice(0, overlap.currRawStart);
+    const mergedOverlap = mergeOverlapText(expandedPrevOverlap, currOverlap);
+    const keptText = currText.slice(overlap.currRawEnd).trim();
     let newPrevText: string | null = null;
-    if (mergedOverlap && mergedOverlap !== overlap.prevOverlap.trim()) {
-      newPrevText = (prevText.slice(0, prevWindowStart + overlap.prevRawStart) + mergedOverlap).trim();
+    if (mergedOverlap && mergedOverlap !== expandedPrevOverlap.trim()) {
+      newPrevText = (prevText.slice(0, prevWindowStart + prevSentenceStart) + mergedOverlap).trim();
     }
-    return { text: keptText, removed: true, removedPre: "", lcsText: currOverlap, newPrevText, mergedOverlap };
+    return { text: keptText, removed: true, removedPre, lcsText: currOverlap, newPrevText, mergedOverlap };
   }
 
   async function handleCleanBleedThrough() {
@@ -1146,11 +1167,11 @@ export default function Home() {
           lcsTexts[curr.id] = result.lcsText;
           if (result.newPrevText !== null) {
             if (!beforeSnapMap.has(prev.id)) {
-              beforeSnapMap.set(prev.id, { pageId: prev.id, text: prevCurrent.text, bleedThroughCleaned: prevCurrent.bleedThroughCleaned });
+              beforeSnapMap.set(prev.id, { pageId: prev.id, text: prevCurrent.text, bleedThroughCleaned: prevCurrent.bleedThroughCleaned, isPrevUpdate: true });
             }
             const updatedPrev = { ...prevCurrent, text: result.newPrevText, bleedThroughCleaned: true };
             toUpdateMap.set(prev.id, updatedPrev);
-            afterSnapMap.set(prev.id, { pageId: prev.id, text: result.newPrevText, bleedThroughCleaned: true });
+            afterSnapMap.set(prev.id, { pageId: prev.id, text: result.newPrevText, bleedThroughCleaned: true, isPrevUpdate: true });
             lcsTexts[prev.id] = result.mergedOverlap;
             prevUpdateIds.add(prev.id);
           }
@@ -1421,7 +1442,7 @@ export default function Home() {
                 <button onClick={() => setBleedResultState(null)} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
               </div>
               <p className="text-xs text-gray-500 mb-2">
-                {editChapter?.name} の {bleedResultState.diffs.length}ページ
+                {editChapter?.name} の {bleedResultState.diffs.filter(d => !d.isPrevUpdate).length}ページ
                 {bleedResultState.type === "undo" ? "を復元" : bleedResultState.type === "redo" ? "を再除去" : "に映り込みを検出・除去"}
               </p>
               {bleedResultState.type === "clean" && hasBleedPendingConfirm && (
@@ -1446,10 +1467,10 @@ export default function Home() {
               )}
             </div>
             <div className="flex-1 overflow-y-auto p-1.5">
-              {bleedResultState.diffs.length === 0 ? (
+              {bleedResultState.diffs.filter(d => !d.isPrevUpdate).length === 0 ? (
                 <p className="text-xs text-gray-400 text-center mt-8">変更されたページはありません</p>
               ) : (
-                bleedResultState.diffs.map((diff) => (
+                bleedResultState.diffs.filter(d => !d.isPrevUpdate).map((diff) => (
                   <div
                     key={diff.pageId}
                     onClick={() => { setSelectedPageId(diff.pageId); setMobilePanel("text"); setShowSidebar(false); }}
@@ -2156,20 +2177,9 @@ export default function Home() {
                         const mainText = chapterSearchActive && chapterSearch.trim()
                           ? renderHighlighted(baseText, chapterSearch, chapterSearchMatchIdx, chapterSearchData?.pageMatches.find((m) => m.pageId === selectedPage.id)?.startIdx ?? 0)
                           : baseText;
-                        if (!bleedDiff || (!bleedDiff.removedPre && !bleedDiff.lcsText)) {
+                        if (!bleedDiff || bleedDiff.isPrevUpdate || (!bleedDiff.removedPre && !bleedDiff.lcsText)) {
+                          // prev更新側は青ハイライトしない（削除側のみ表示）
                           return <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">{mainText}</p>;
-                        }
-                        if (bleedDiff.isPrevUpdate) {
-                          const tail = bleedDiff.lcsText;
-                          const prefix = typeof mainText === "string" && mainText.endsWith(tail)
-                            ? mainText.slice(0, mainText.length - tail.length)
-                            : null;
-                          return (
-                            <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
-                              {prefix ?? mainText}
-                              {prefix !== null && <span style={{ color: '#2563eb' }}>{tail}</span>}
-                            </p>
-                          );
                         }
                         return (
                           <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
