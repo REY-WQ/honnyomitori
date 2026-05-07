@@ -1383,7 +1383,7 @@ export default function Home() {
                       {diff.removedText.slice(0, 60)}…
                     </p>
                     <p className="text-[10px] mt-1" style={{ color: '#2563eb' }}>
-                      {diff.charDelta > 0 ? `+${diff.charDelta}文字 復元` : `${diff.charDelta}文字 除去`}
+                      {`${diff.charDelta > 0 ? "+" : ""}${diff.charDelta}文字 ${bleedResultState.type === "undo" ? "復元" : "除去"}`}
                     </p>
                   </div>
                 ))
