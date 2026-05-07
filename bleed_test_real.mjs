@@ -262,42 +262,67 @@ function chooseBetterOverlapSegment(prevSegment, currSegment) {
   return chosen;
 }
 
-function mergeOverlapText(prevOverlap, currOverlap) {
+function processOverlap(prevOverlap, currOverlap) {
   const prevSegments = splitToSentences(prevOverlap);
   const currSegments = splitToSentences(currOverlap);
-  if (prevSegments.length === 0) return { merged: currOverlap.trim(), debug: { prevSegments, currSegments, decisions: [] } };
-  if (currSegments.length === 0) return { merged: prevOverlap.trim(), debug: { prevSegments, currSegments, decisions: [] } };
-  const merged = [];
+  if (prevSegments.length === 0 || currSegments.length === 0) {
+    return { newPrevOverlap: prevOverlap, newCurrOverlap: currOverlap, debug: { prevSegments, currSegments, decisions: [] } };
+  }
+  const prevReplace = new Map();
+  const currDelete = new Set();
   const decisions = [];
   let prevIndex = 0;
-  let matched = 0;
-  for (const currSegment of currSegments) {
+  let lastMatchedPrevIdx = -1;
+  let firstMatchedCurrIdx = -1;
+  for (let j = 0; j < currSegments.length; j++) {
+    const currSeg = currSegments[j];
     let bestIndex = -1;
     let bestScore = 0;
     const searchEnd = Math.min(prevSegments.length, prevIndex + 7);
     for (let i = prevIndex; i < searchEnd; i++) {
-      const score = overlapSimilarity(prevSegments[i], currSegment);
+      const score = overlapSimilarity(prevSegments[i], currSeg);
       if (score > bestScore) { bestScore = score; bestIndex = i; }
     }
-    if (bestIndex >= 0 && bestScore >= 0.38) {
-      decisions.push({ curr: currSegment, action: "matched-prev", prevIdx: bestIndex, score: bestScore.toFixed(2) });
-      for (let i = prevIndex; i < bestIndex; i++) {
-        if (segmentQuality(prevSegments[i]) >= 30) merged.push(prevSegments[i]);
-      }
-      merged.push(chooseBetterOverlapSegment(prevSegments[bestIndex], currSegment));
-      prevIndex = bestIndex + 1;
-      matched++;
+    if (bestIndex < 0 || bestScore < 0.38) {
+      decisions.push({ curr: currSeg, action: "no-match", score: bestScore.toFixed(2) });
+      continue;
+    }
+    const prevSeg = prevSegments[bestIndex];
+    const winner = chooseBetterOverlapSegment(prevSeg, currSeg);
+    if (winner === prevSeg) {
+      decisions.push({ curr: currSeg, action: "prev勝ち (curr削除)", score: bestScore.toFixed(2) });
+      currDelete.add(j);
+    } else if (winner === currSeg) {
+      decisions.push({ curr: currSeg, action: "curr勝ち (prev削除)", score: bestScore.toFixed(2) });
+      prevReplace.set(bestIndex, null);
     } else {
-      decisions.push({ curr: currSegment, action: "skip", score: bestScore.toFixed(2) });
+      decisions.push({ curr: currSeg, action: "補完版 (prevを置換, curr削除)", score: bestScore.toFixed(2) });
+      prevReplace.set(bestIndex, winner);
+      currDelete.add(j);
+    }
+    prevIndex = bestIndex + 1;
+    lastMatchedPrevIdx = bestIndex;
+    if (firstMatchedCurrIdx === -1) firstMatchedCurrIdx = j;
+  }
+  // 前ページ：最後にマッチした文より「後ろ」にあるマッチしてない文は削除
+  for (let i = lastMatchedPrevIdx + 1; i < prevSegments.length; i++) {
+    if (!prevReplace.has(i)) prevReplace.set(i, null);
+  }
+  // 次ページ：最初にマッチした文より「前」にあるマッチしてない文は削除
+  if (firstMatchedCurrIdx > 0) {
+    for (let j = 0; j < firstMatchedCurrIdx; j++) {
+      if (!currDelete.has(j)) currDelete.add(j);
     }
   }
-  if (matched === 0) {
-    return {
-      merged: segmentQuality(currOverlap) > segmentQuality(prevOverlap) ? currOverlap.trim() : prevOverlap.trim(),
-      debug: { prevSegments, currSegments, decisions, fallback: true },
-    };
-  }
-  return { merged: merged.join("").trim(), debug: { prevSegments, currSegments, decisions } };
+  const newPrevOverlap = prevSegments.map((seg, i) => {
+    if (prevReplace.has(i)) {
+      const v = prevReplace.get(i);
+      return v === null ? "" : v;
+    }
+    return seg;
+  }).join("").trim();
+  const newCurrOverlap = currSegments.map((seg, j) => currDelete.has(j) ? "" : seg).join("").trim();
+  return { newPrevOverlap, newCurrOverlap, debug: { prevSegments, currSegments, decisions } };
 }
 
 function findSentenceBoundaryBefore(text, position) {
@@ -318,14 +343,15 @@ function removeBleedThroughHead(currText, prevText) {
   const expandedPrevOverlap = prevWindow.slice(prevSentenceStart);
   const currOverlap = currText.slice(overlap.currRawStart, overlap.currRawEnd);
   const removedPre = currText.slice(0, overlap.currRawStart);
-  const { merged: mergedOverlap, debug } = mergeOverlapText(expandedPrevOverlap, currOverlap);
-  const keptText = currText.slice(overlap.currRawEnd).trim();
-  // newPrevText も計算（テスト表示用）
+  const { newPrevOverlap, newCurrOverlap, debug } = processOverlap(expandedPrevOverlap, currOverlap);
+  const keptText = newCurrOverlap
+    ? joinAfterOverlap(newCurrOverlap, currText.slice(overlap.currRawEnd))
+    : currText.slice(overlap.currRawEnd).trim();
   let newPrevText = null;
-  if (mergedOverlap && mergedOverlap !== expandedPrevOverlap.trim()) {
-    newPrevText = (prevText.slice(0, prevWindowStart + prevSentenceStart) + mergedOverlap).trim();
+  if (newPrevOverlap !== expandedPrevOverlap.trim()) {
+    newPrevText = (prevText.slice(0, prevWindowStart + prevSentenceStart) + newPrevOverlap).trim();
   }
-  return { overlap, currOverlap, removedPre, mergedOverlap, keptText, newPrevText, prevSentenceStart, debug };
+  return { overlap, currOverlap, removedPre, mergedOverlap: newPrevOverlap, keptText, newPrevText, prevSentenceStart, debug };
 }
 
 // ===== テスト実行 =====
@@ -392,12 +418,10 @@ for (const [chapterId, chPages] of Object.entries(byChapter)) {
       console.log(`\n【curr 先頭〜重なり前の独立断片（巻き込み削除）】`);
       console.log(`  「${result.removedPre.replace(/\n/g, "↵").slice(0, 150)}」`);
     }
-    console.log(`\n【文単位マッチ判定】`);
+    console.log(`\n【文単位判定】`);
     for (const d of result.debug.decisions) {
-      const sym = d.action === "matched-prev" ? "✓prev書戻し" : "—スキップ ";
-      console.log(`  ${sym}(${d.score})  「${d.curr.slice(0, 50)}」`);
+      console.log(`  ${d.action.padEnd(30)}(${d.score})  「${d.curr.slice(0, 50)}」`);
     }
-    if (result.debug.fallback) console.log(`  ※マッチ0件 → フォールバック`);
   }
 }
 

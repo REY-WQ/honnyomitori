@@ -1061,41 +1061,67 @@ export default function Home() {
   // 戻り値:
   //   merged   = prev に書き戻すマージ済みテキスト（既存の役割）
   //   currKept = curr に残すべき文（prevとマッチせず curr 由来と判定された文の連結）
-  // prev 側に書き戻すマージ済みテキストを生成する。
-  // 原則：「重なりがあるなら、その周辺の独立断片もまとめて削除」
-  //       prev 側 = 重なりの開始位置以降をすべて mergedOverlap で置き換える
-  //       curr 側 = 重なりの終了位置までをすべて削除（呼び出し側で対応）
-  function mergeOverlapText(prevOverlap: string, currOverlap: string): string {
+  // 重なりの中身を1文ごとに処理する。
+  //   両方にあって prev が綺麗 → 次ページからその1文を削除（前ページはそのまま）
+  //   両方にあって curr が綺麗 → 前ページからその1文を削除（次ページはそのまま）
+  //   次ページにしか無い      → 両方そのまま（次ページの本物）
+  // 戻り値:
+  //   newPrevOverlap = 前ページに書き戻す（汚い文を抜いた／綺麗版で置換した）テキスト
+  //   newCurrOverlap = 次ページに残す（汚い文を抜いた）テキスト
+  function processOverlap(prevOverlap: string, currOverlap: string): { newPrevOverlap: string; newCurrOverlap: string } {
     const prevSegments = splitToSentences(prevOverlap);
     const currSegments = splitToSentences(currOverlap);
-    if (prevSegments.length === 0) return currOverlap.trim();
-    if (currSegments.length === 0) return prevOverlap.trim();
-    const merged: string[] = [];
+    if (prevSegments.length === 0 || currSegments.length === 0) {
+      return { newPrevOverlap: prevOverlap, newCurrOverlap: currOverlap };
+    }
+    const prevReplace = new Map<number, string | null>();  // null=削除, string=置換
+    const currDelete = new Set<number>();
     let prevIndex = 0;
-    let matched = 0;
-    for (const currSegment of currSegments) {
+    let lastMatchedPrevIdx = -1;
+    let firstMatchedCurrIdx = -1;
+    for (let j = 0; j < currSegments.length; j++) {
+      const currSeg = currSegments[j];
       let bestIndex = -1;
       let bestScore = 0;
       const searchEnd = Math.min(prevSegments.length, prevIndex + 7);
       for (let i = prevIndex; i < searchEnd; i++) {
-        const score = overlapSimilarity(prevSegments[i], currSegment);
+        const score = overlapSimilarity(prevSegments[i], currSeg);
         if (score > bestScore) { bestScore = score; bestIndex = i; }
       }
-      if (bestIndex >= 0 && bestScore >= 0.38) {
-        // マッチ：prevとcurrのうち品質の良い方をprevに書き戻す
-        for (let i = prevIndex; i < bestIndex; i++) {
-          if (segmentQuality(prevSegments[i]) >= 30) merged.push(prevSegments[i]);
-        }
-        merged.push(chooseBetterOverlapSegment(prevSegments[bestIndex], currSegment));
-        prevIndex = bestIndex + 1;
-        matched++;
+      if (bestIndex < 0 || bestScore < 0.38) continue;
+      const prevSeg = prevSegments[bestIndex];
+      const winner = chooseBetterOverlapSegment(prevSeg, currSeg);
+      if (winner === prevSeg) {
+        currDelete.add(j);
+      } else if (winner === currSeg) {
+        prevReplace.set(bestIndex, null);
+      } else {
+        prevReplace.set(bestIndex, winner);
+        currDelete.add(j);
       }
-      // 非マッチの curr 文は無視（prevに追記しない＝二重化バグ回避）
+      prevIndex = bestIndex + 1;
+      lastMatchedPrevIdx = bestIndex;
+      if (firstMatchedCurrIdx === -1) firstMatchedCurrIdx = j;
     }
-    if (matched === 0) {
-      return segmentQuality(currOverlap) > segmentQuality(prevOverlap) ? currOverlap.trim() : prevOverlap.trim();
+    // 前ページ：最後にマッチした文より「後ろ」にあるマッチしてない文は誤爆 → 削除
+    for (let i = lastMatchedPrevIdx + 1; i < prevSegments.length; i++) {
+      if (!prevReplace.has(i)) prevReplace.set(i, null);
     }
-    return merged.join("").trim();
+    // 次ページ：最初にマッチした文より「前」にあるマッチしてない文は誤爆 → 削除
+    if (firstMatchedCurrIdx > 0) {
+      for (let j = 0; j < firstMatchedCurrIdx; j++) {
+        if (!currDelete.has(j)) currDelete.add(j);
+      }
+    }
+    const newPrevOverlap = prevSegments.map((seg, i) => {
+      if (prevReplace.has(i)) {
+        const v = prevReplace.get(i);
+        return v === null ? "" : v;
+      }
+      return seg;
+    }).join("").trim();
+    const newCurrOverlap = currSegments.map((seg, j) => currDelete.has(j) ? "" : seg).join("").trim();
+    return { newPrevOverlap, newCurrOverlap };
   }
 
   // 指定位置より前にある最後の文末記号(。！？\n)の直後を返す。
@@ -1122,13 +1148,18 @@ export default function Home() {
     const expandedPrevOverlap = prevWindow.slice(prevSentenceStart);
     const currOverlap = currText.slice(overlap.currRawStart, overlap.currRawEnd);
     const removedPre = currText.slice(0, overlap.currRawStart);
-    const mergedOverlap = mergeOverlapText(expandedPrevOverlap, currOverlap);
-    const keptText = currText.slice(overlap.currRawEnd).trim();
+    // 重なりの中身を1文ごとに処理：汚い方の文だけ消す
+    const { newPrevOverlap, newCurrOverlap } = processOverlap(expandedPrevOverlap, currOverlap);
+    // 次ページ：「重なりのまえ」(removedPre) を削除、「重なりの中」を newCurrOverlap に置換、「重なりのあと」はそのまま
+    const keptText = newCurrOverlap
+      ? joinAfterOverlap(newCurrOverlap, currText.slice(overlap.currRawEnd))
+      : currText.slice(overlap.currRawEnd).trim();
+    // 前ページ：「重なりのまえ」(prevSentenceStart まで) はそのまま、「重なりの中以降」を newPrevOverlap に置換
     let newPrevText: string | null = null;
-    if (mergedOverlap && mergedOverlap !== expandedPrevOverlap.trim()) {
-      newPrevText = (prevText.slice(0, prevWindowStart + prevSentenceStart) + mergedOverlap).trim();
+    if (newPrevOverlap !== expandedPrevOverlap.trim()) {
+      newPrevText = (prevText.slice(0, prevWindowStart + prevSentenceStart) + newPrevOverlap).trim();
     }
-    return { text: keptText, removed: true, removedPre, lcsText: currOverlap, newPrevText, mergedOverlap };
+    return { text: keptText, removed: true, removedPre, lcsText: currOverlap, newPrevText, mergedOverlap: newPrevOverlap };
   }
 
   async function handleCleanBleedThrough() {
