@@ -1066,6 +1066,9 @@ export default function Home() {
 
       if (!allCleaned && curr.bleedThroughCleaned) continue;
 
+      setCleaningBleedResult(`解析中… p.${curr.pageNumber} / ${pages.length}`);
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+
       let newCurrText = curr.text;
       let changed = false;
 
@@ -1107,6 +1110,7 @@ export default function Home() {
     const toUpdate = [...toUpdateMap.values()];
 
     setCleaningBleed(false);
+    setCleaningBleedResult(null);
 
     if (beforeSnap.length > 0) {
       setBleedPending({ toUpdate, beforeSnap, afterSnap, chapterId: editChapter.id, totalRemoved });
