@@ -880,8 +880,8 @@ export default function Home() {
 
     let best: (FuzzyOverlap & { normScore: number }) | null = null;
     const maxCurrStart = Math.min(OVERLAP_MAX_CURR_START, maxCurrLen - OVERLAP_MIN_NORM_CHARS);
+    let lastYield = Date.now();
     for (let currStartNorm = 0; currStartNorm <= maxCurrStart; currStartNorm += OVERLAP_STEP_CHARS) {
-      await new Promise<void>(resolve => setTimeout(resolve, 0));
       const currAvailable = maxCurrLen - currStartNorm;
       for (const currLen of candidateLengths(currAvailable)) {
         const currEndNorm = currStartNorm + currLen;
@@ -890,6 +890,10 @@ export default function Home() {
         const prevMax = Math.min(maxPrevLen, currLen + OVERLAP_LENGTH_FUZZ);
         const minPrevEnd = Math.max(prevMin, maxPrevLen - OVERLAP_MAX_PREV_END_BACKTRACK);
         for (let prevEndNorm = maxPrevLen; prevEndNorm >= minPrevEnd; prevEndNorm -= OVERLAP_STEP_CHARS) {
+          if (Date.now() - lastYield > 16) {
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            lastYield = Date.now();
+          }
           for (let prevLen = prevMin; prevLen <= Math.min(prevEndNorm, prevMax); prevLen += OVERLAP_STEP_CHARS) {
             const prevStartNorm = prevEndNorm - prevLen;
             const prevPart = prevNorm.chars.slice(prevStartNorm, prevEndNorm);
