@@ -903,14 +903,16 @@ export default function Home() {
     const prevNorm = normalizeForOverlap(prevWindow);
     const currNorm = normalizeForOverlap(currWindow);
     const maxCurrLen = Math.min(currNorm.chars.length, OVERLAP_MAX_NORM_CHARS);
-    const maxPrevLen = Math.min(prevNorm.chars.length, OVERLAP_MAX_NORM_CHARS);
-    if (maxCurrLen < OVERLAP_MIN_NORM_CHARS || maxPrevLen < OVERLAP_MIN_NORM_CHARS) return null;
+    // maxPrevSegLen は「比較セグメントの最大長」。prev の末尾位置とは別物。
+    const maxPrevSegLen = Math.min(prevNorm.chars.length, OVERLAP_MAX_NORM_CHARS);
+    if (maxCurrLen < OVERLAP_MIN_NORM_CHARS || maxPrevSegLen < OVERLAP_MIN_NORM_CHARS) return null;
 
-    // 3D化：prevEndNorm を maxPrevLen に固定（映り込みは prev の末尾から発生する前提）
+    // 3D化：prevEndNorm は prev の本当の末尾（=chars.length）に固定。
+    // 映り込みは prev の末尾発生なので、必ず本当の末尾から prevLen 分だけ遡って比較する。
     // ループは currStartNorm × currLen × prevLen の3次元のみ
     // prevPart bigrams のレイジーキャッシュ。キーは prevLen のみ（prevEndNorm 固定なので）
     const prevBcCache = new Map<number, Map<string, number>>();
-    const prevEndNorm = maxPrevLen;
+    const prevEndNorm = prevNorm.chars.length;
 
     let best: (FuzzyOverlap & { normScore: number }) | null = null;
     const maxCurrStart = Math.min(OVERLAP_MAX_CURR_START, maxCurrLen - OVERLAP_MIN_NORM_CHARS);
@@ -922,8 +924,8 @@ export default function Home() {
         const currPart = currNorm.chars.slice(currStartNorm, currEndNorm);
         const currBc = bigramCounts(currPart);  // currPart bigrams を (currStartNorm, currLen) ごとに1回だけ計算
         const prevMin = Math.max(OVERLAP_MIN_NORM_CHARS, currLen - OVERLAP_LENGTH_FUZZ);
-        const prevMax = Math.min(maxPrevLen, currLen + OVERLAP_LENGTH_FUZZ);
-        for (let prevLen = prevMin; prevLen <= Math.min(prevEndNorm, prevMax); prevLen += OVERLAP_STEP_CHARS) {
+        const prevMax = Math.min(maxPrevSegLen, currLen + OVERLAP_LENGTH_FUZZ);
+        for (let prevLen = prevMin; prevLen <= prevMax; prevLen += OVERLAP_STEP_CHARS) {
           if (Date.now() - lastYield > 16) {
             await new Promise<void>(resolve => setTimeout(resolve, 0));
             lastYield = Date.now();
