@@ -830,10 +830,10 @@ export default function Home() {
   const OVERLAP_PREV_LOOKBACK = 1400;
   const OVERLAP_CURR_LOOKAHEAD = 1600;
   const OVERLAP_MIN_NORM_CHARS = 45;
-  const OVERLAP_MAX_NORM_CHARS = 900;
+  const OVERLAP_MAX_NORM_CHARS = 400;  // 旧 900。実データは最大~200文字、余裕を持って 400 に
   const OVERLAP_STEP_CHARS = 30;
-  const OVERLAP_LENGTH_FUZZ = 160;
-  const OVERLAP_MAX_CURR_START = 700;
+  const OVERLAP_LENGTH_FUZZ = 60;  // 旧 160。実データは prev/curr の長さ差 ±30 以内
+  const OVERLAP_MAX_CURR_START = 180;  // 旧 700。実データは全件 currStart≈0
   const IGNORED_OVERLAP_CHARS = new Set([
     ..."\u3000\u3001\u3002\uff0c\uff0e\u30fb\uff65\u300c\u300d\u300e\u300f\uff08\uff09()\uff3b\uff3d[]\u3010\u3011\u3008\u3009\u300a\u300b\u2026\u2025\u2014\u2015-\u2010\u2011\u2013_:\uff1a;\uff1b,.'\"`\u2018\u2019\u201c\u201d!?\uff01\uff1f",
   ]);
