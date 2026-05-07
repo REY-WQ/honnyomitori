@@ -686,7 +686,7 @@ export default function Home() {
   const undoPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 除去/復元結果モード
-  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number };
+  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number; isPrevUpdate?: boolean };
   type BleedResultState = { type: "clean" | "undo" | "redo"; diffs: BleedDiff[]; chapterId: string } | null;
   const [bleedResultState, setBleedResultState] = useState<BleedResultState>(null);
 
@@ -1023,12 +1023,12 @@ export default function Home() {
     return merged.join("").trim();
   }
 
-  function removeBleedThroughHead(currText: string, prevText: string): { text: string; removed: boolean; removedPre: string; lcsText: string; newPrevText: string | null } {
+  function removeBleedThroughHead(currText: string, prevText: string): { text: string; removed: boolean; removedPre: string; lcsText: string; newPrevText: string | null; mergedOverlap: string } {
     const prevWindowStart = Math.max(0, prevText.length - OVERLAP_PREV_LOOKBACK);
     const prevWindow = prevText.slice(prevWindowStart);
     const currWindow = currText.slice(0, OVERLAP_CURR_LOOKAHEAD);
     const overlap = findFuzzyPageOverlap(prevWindow, currWindow);
-    if (!overlap) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null };
+    if (!overlap) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, mergedOverlap: "" };
     const currPrefix = currText.slice(0, overlap.currRawStart);
     const currOverlap = currText.slice(overlap.currRawStart, overlap.currRawEnd);
     const mergedOverlap = mergeOverlapText(overlap.prevOverlap, currOverlap);
@@ -1037,7 +1037,7 @@ export default function Home() {
     if (mergedOverlap && mergedOverlap !== overlap.prevOverlap.trim()) {
       newPrevText = (prevText.slice(0, prevWindowStart + overlap.prevRawStart) + mergedOverlap).trim();
     }
-    return { text: keptText, removed: true, removedPre: "", lcsText: currOverlap, newPrevText };
+    return { text: keptText, removed: true, removedPre: "", lcsText: currOverlap, newPrevText, mergedOverlap };
   }
 
   async function handleCleanBleedThrough() {
@@ -1053,6 +1053,7 @@ export default function Home() {
     const afterSnapMap = new Map<string, PageSnap>();
     const removedPres: Record<string, string> = {};
     const lcsTexts: Record<string, string> = {};
+    const prevUpdateIds = new Set<string>();
 
     for (let i = 0; i < pages.length; i++) {
       const prev = pages[i - 1];
@@ -1078,6 +1079,8 @@ export default function Home() {
             const updatedPrev = { ...prevCurrent, text: result.newPrevText, bleedThroughCleaned: true };
             toUpdateMap.set(prev.id, updatedPrev);
             afterSnapMap.set(prev.id, { pageId: prev.id, text: result.newPrevText, bleedThroughCleaned: true });
+            lcsTexts[prev.id] = result.mergedOverlap;
+            prevUpdateIds.add(prev.id);
           }
         }
       }
@@ -1117,6 +1120,7 @@ export default function Home() {
           removedPre: removedPres[b.pageId] ?? "",
           lcsText: lcsTexts[b.pageId] ?? "",
           charDelta: afterSnap[i].text.length - b.text.length,
+          isPrevUpdate: prevUpdateIds.has(b.pageId),
         })),
       });
     }
@@ -2054,6 +2058,18 @@ export default function Home() {
                           : selectedPage.text;
                         if (!bleedDiff || (!bleedDiff.removedPre && !bleedDiff.lcsText)) {
                           return <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">{mainText}</p>;
+                        }
+                        if (bleedDiff.isPrevUpdate) {
+                          const tail = bleedDiff.lcsText;
+                          const prefix = typeof mainText === "string" && mainText.endsWith(tail)
+                            ? mainText.slice(0, mainText.length - tail.length)
+                            : null;
+                          return (
+                            <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
+                              {prefix ?? mainText}
+                              {prefix !== null && <span style={{ color: '#2563eb' }}>{tail}</span>}
+                            </p>
+                          );
                         }
                         return (
                           <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
