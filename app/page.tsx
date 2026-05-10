@@ -6,10 +6,10 @@ import { Book, Chapter, Page, BookSettings } from "@/lib/types";
 import {
   getBooks, addBook, deleteBook, renameBook, updateBookSettings,
   addChapter, renameChapter, deleteChapter,
-  addPages, updatePage, deletePage, deletePages,
+  addPages, updatePage, deletePages,
   reorderChapters, reorderPages,
   nextChapterName,
-  uploadPageImage, deletePageImage, pageImageExists,
+  uploadPageImage, deletePageImage,
 } from "@/lib/storage";
 import { compressImage } from "@/lib/compress";
 import { getSupabase } from "@/lib/supabase";
@@ -20,9 +20,6 @@ type View = "text" | "edit";
 const RE_SENT_END     = /[。！？…」』）]$/;
 const RE_CHAPTER_HEAD = /^第[一二三四五六七八九十百千万\d]+[章節部]/;
 const RE_SEPARATOR    = /^[\*\-─━=＝]{2,}$/;
-const RE_NOBRE_PRE    = /^\d+\s+第[一二三四五六七八九十百千万\d]+[章節部]/;
-const RE_NOBRE_SUF    = /第[一二三四五六七八九十百千万\d]+[章節部].*\d+$/;
-const RE_PAGE_NUM     = /^\s*\d+\s*$/;
 
 export default function Home() {
   const [books, setBooks] = useState<Book[]>([]);
@@ -443,56 +440,6 @@ export default function Home() {
     return out.join("\n");
   }
 
-  // 映り込み除去: 句点で終わらない文が、後に出てくる長い文の先頭と一致する場合は削除
-  function removePrefixDuplicates(sentences: string[]): string[] {
-    const result: string[] = [];
-    for (let i = 0; i < sentences.length; i++) {
-      const s = sentences[i].trim();
-      if (!s) continue;
-      // 句点系で終わっていれば完結した文 → 削除しない
-      if (RE_SENT_END.test(s)) { result.push(s); continue; }
-      // 10文字未満は短すぎて判定不能 → 削除しない
-      if (s.length < 10) { result.push(s); continue; }
-      // 後ろのいずれかの文がこの文を先頭に含んでいれば映り込みと判定
-      const isBleedThrough = sentences.slice(i + 1, i + 10).some(
-        (later) => later.trimStart().startsWith(s)
-      );
-      if (!isBleedThrough) result.push(s);
-    }
-    return result;
-  }
-
-  function cleanOcrText(raw: string, isFirstPage = true): string {
-    const lines = raw.split("\n").filter((line) => {
-      const t = line.trim();
-      if (!t) return false;
-      if (RE_PAGE_NUM.test(t)) return false;
-      if (RE_NOBRE_PRE.test(t)) return false;
-      if (RE_NOBRE_SUF.test(t)) return false;
-      if (!isFirstPage && RE_CHAPTER_HEAD.test(t)) return false;
-      return true;
-    });
-
-    const out: string[] = [];
-    let buffer = "";
-
-    for (let i = 0; i < lines.length; i++) {
-      const t = lines[i].trim();
-      if (!t) continue;
-      buffer = buffer ? buffer + t : t;
-      const keep = RE_SENT_END.test(t) || RE_CHAPTER_HEAD.test(t) || RE_SEPARATOR.test(t);
-      if (keep || i === lines.length - 1) {
-        out.push(buffer);
-        buffer = "";
-      }
-    }
-    if (buffer) out.push(buffer);
-    const cleaned = selectedBook?.settings.removeBleedThrough !== false
-      ? removePrefixDuplicates(out)
-      : out;
-    return cleaned.join("\n").trim();
-  }
-
   async function handleCancelUpload() {
     cancelUploadRef.current = true;
   }
@@ -606,13 +553,6 @@ export default function Home() {
     await Promise.all(
       neighbors.map((n) => updatePage({ ...n, bleedThroughCleaned: false }))
     );
-  }
-
-  async function handleDeletePage(id: string) {
-    if (selectedBookId) await deletePageImage(selectedBookId, id).catch(() => {});
-    await deletePage(id);
-    if (selectedPageId === id) setSelectedPageId(null);
-    reload();
   }
 
   async function handleBulkDelete() {
@@ -812,22 +752,10 @@ export default function Home() {
     }
   }
 
-  function splitToSentences(text: string): string[] {
-    const results: string[] = [];
-    let current = "";
-    for (const char of text) {
-      current += char;
-      if ("。！？".includes(char) || char === "\n") {
-        if (current.trim()) results.push(current.trim());
-        current = "";
-      }
-    }
-    if (current.trim()) results.push(current.trim());
-    return results.filter((s) => s.length > 0);
-  }
-
   type NormalizedText = { chars: string[]; rawStart: number[]; rawEnd: number[] };
   type FuzzyOverlap = { prevRawStart: number; currRawStart: number; currRawEnd: number; prevOverlap: string; currOverlap: string; score: number };
+  type CommonOverlapAnchor = { prevRawStart: number; currRawStart: number; normLength: number };
+  type OverlapSwitchPoint = { prevRawStart: number; currRawStart: number; score: number; kind: "anchor" | "restart" };
 
   const OVERLAP_PREV_LOOKBACK = 1400;
   const OVERLAP_CURR_LOOKAHEAD = 1600;
@@ -836,6 +764,13 @@ export default function Home() {
   const OVERLAP_STEP_CHARS = 30;
   const OVERLAP_LENGTH_FUZZ = 60;  // 旧 160。実データは prev/curr の長さ差 ±30 以内
   const OVERLAP_MAX_CURR_START = 180;  // 旧 700。実データは全件 currStart≈0
+  const OVERLAP_ANCHOR_MIN_NORM_CHARS = 18;
+  const OVERLAP_ANCHOR_PREFERRED_NORM_CHARS = 28;
+  const OVERLAP_ANCHOR_MAX_PREFERRED_CURR_RAW_START = 120;
+  const OVERLAP_RESTART_MAX_DROP_RAW_CHARS = 650;
+  const OVERLAP_RESTART_HEAD_EXTRA_RAW_CHARS = 260;
+  const OVERLAP_RESTART_MIN_NORM_CHARS = 12;
+  const OVERLAP_RESTART_MIN_SCORE = 0.44;
   const IGNORED_OVERLAP_CHARS = new Set([
     ..."\u3000\u3001\u3002\uff0c\uff0e\u30fb\uff65\u300c\u300d\u300e\u300f\uff08\uff09()\uff3b\uff3d[]\u3010\u3011\u3008\u3009\u300a\u300b\u2026\u2025\u2014\u2015-\u2010\u2011\u2013_:\uff1a;\uff1b,.'\"`\u2018\u2019\u201c\u201d!?\uff01\uff1f",
   ]);
@@ -863,6 +798,65 @@ export default function Home() {
     return { chars, rawStart, rawEnd };
   }
 
+  function isOverlapAnchorBoundary(text: string, rawIndex: number): boolean {
+    for (let i = rawIndex - 1; i >= 0; i--) {
+      const char = text[i];
+      if (/\s/.test(char)) continue;
+      return /[。、，,.．:：;；!?！？「」『』（）()\[\]【】〈〉《》]/.test(char);
+    }
+    return true;
+  }
+
+  function findCommonOverlapAnchor(prevOverlap: string, currOverlap: string): CommonOverlapAnchor | null {
+    const prevNorm = normalizeForOverlap(prevOverlap);
+    const currNorm = normalizeForOverlap(currOverlap);
+    if (prevNorm.chars.length < OVERLAP_ANCHOR_MIN_NORM_CHARS || currNorm.chars.length < OVERLAP_ANCHOR_MIN_NORM_CHARS) return null;
+
+    let nextRow = new Array(currNorm.chars.length + 1).fill(0);
+    let currRow = new Array(currNorm.chars.length + 1).fill(0);
+    let earliestBest: CommonOverlapAnchor | null = null;
+    let laterBest: CommonOverlapAnchor | null = null;
+
+    for (let i = prevNorm.chars.length - 1; i >= 0; i--) {
+      for (let j = currNorm.chars.length - 1; j >= 0; j--) {
+        currRow[j] = prevNorm.chars[i] === currNorm.chars[j] ? nextRow[j + 1] + 1 : 0;
+        if (currRow[j] < OVERLAP_ANCHOR_MIN_NORM_CHARS) continue;
+
+        const prevRawStart = prevNorm.rawStart[i] ?? 0;
+        const currRawStart = currNorm.rawStart[j] ?? 0;
+        if (!isOverlapAnchorBoundary(prevOverlap, prevRawStart)) continue;
+        if (!isOverlapAnchorBoundary(currOverlap, currRawStart)) continue;
+
+        const candidate = { prevRawStart, currRawStart, normLength: currRow[j] };
+        if (
+          !earliestBest ||
+          candidate.currRawStart < earliestBest.currRawStart ||
+          (candidate.currRawStart === earliestBest.currRawStart && candidate.normLength > earliestBest.normLength) ||
+          (candidate.currRawStart === earliestBest.currRawStart && candidate.normLength === earliestBest.normLength && candidate.prevRawStart < earliestBest.prevRawStart)
+        ) {
+          earliestBest = candidate;
+        }
+
+        if (
+          candidate.normLength >= OVERLAP_ANCHOR_PREFERRED_NORM_CHARS &&
+          candidate.currRawStart <= OVERLAP_ANCHOR_MAX_PREFERRED_CURR_RAW_START &&
+          (
+            !laterBest ||
+            candidate.currRawStart > laterBest.currRawStart ||
+            (candidate.currRawStart === laterBest.currRawStart && candidate.normLength > laterBest.normLength) ||
+            (candidate.currRawStart === laterBest.currRawStart && candidate.normLength === laterBest.normLength && candidate.prevRawStart > laterBest.prevRawStart)
+          )
+        ) {
+          laterBest = candidate;
+        }
+      }
+      [nextRow, currRow] = [currRow, nextRow];
+      currRow.fill(0);
+    }
+
+    return laterBest ?? earliestBest;
+  }
+
   function bigramCounts(chars: string[]): Map<string, number> {
     const counts = new Map<string, number>();
     for (let i = 0; i < chars.length - 1; i++) {
@@ -872,13 +866,41 @@ export default function Home() {
     return counts;
   }
 
-  function bigramDice(a: string[], b: string[]): number {
-    if (a.length < 2 || b.length < 2) return 0;
-    const ac = bigramCounts(a);
-    const bc = bigramCounts(b);
+  function ngramDice(charsA: string[], charsB: string[], size: number): number {
+    if (charsA.length < size || charsB.length < size) return 0;
+    const counts = new Map<string, number>();
+    for (let i = 0; i <= charsA.length - size; i++) {
+      const key = charsA.slice(i, i + size).join("");
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+
     let shared = 0;
-    for (const [key, count] of ac) shared += Math.min(count, bc.get(key) ?? 0);
-    return (2 * shared) / (a.length - 1 + b.length - 1);
+    for (let i = 0; i <= charsB.length - size; i++) {
+      const key = charsB.slice(i, i + size).join("");
+      const count = counts.get(key) ?? 0;
+      if (count <= 0) continue;
+      shared++;
+      counts.set(key, count - 1);
+    }
+
+    return (2 * shared) / (charsA.length - size + 1 + charsB.length - size + 1);
+  }
+
+  function suspiciousOcrScore(text: string): number {
+    const compactLength = normalizeForOverlap(text).chars.length;
+    if (compactLength === 0) return 0;
+
+    const hardNoise = text.match(/[A-Za-z<>_=|\\{}^~@#$%&*]/g)?.length ?? 0;
+    let score = Math.min((hardNoise / compactLength) * 4, 0.45);
+    if (/[A-Za-z]{2,}|<|>|=|∞/i.test(text)) score += 0.28;
+    if (!RE_SENT_END.test(text.trim())) score += 0.10;
+    if (/[、,，:：;；]$/.test(text.trim())) score += 0.10;
+
+    const openCount = text.match(/[（(「『【〈《]/g)?.length ?? 0;
+    const closeCount = text.match(/[）)」』】〉》]/g)?.length ?? 0;
+    if (Math.abs(openCount - closeCount) >= 2) score += 0.08;
+
+    return Math.min(score, 1);
   }
 
   function commonSubsequenceLength(a: string[], b: string[]): number {
@@ -971,157 +993,85 @@ export default function Home() {
   function joinAfterOverlap(prefix: string, suffix: string): string {
     if (!prefix.trim()) return suffix.trim();
     if (!suffix.trim()) return prefix.trim();
+    if (!RE_SENT_END.test(prefix.trim())) return (prefix.trimEnd() + suffix.trimStart()).trim();
     if (/\s$/.test(prefix) || /^\s/.test(suffix)) return (prefix + suffix).trim();
     return `${prefix.trimEnd()}\n${suffix.trimStart()}`.trim();
   }
 
-  function overlapSimilarity(a: string, b: string): number {
-    const an = normalizeForOverlap(a).chars;
-    const bn = normalizeForOverlap(b).chars;
-    if (an.length < 8 || bn.length < 8) return 0;
-    const common = commonSubsequenceLength(an, bn);
-    const shortCoverage = common / Math.min(an.length, bn.length);
-    const longCoverage = common / Math.max(an.length, bn.length);
-    return bigramDice(an, bn) * 0.35 + shortCoverage * 0.45 + longCoverage * 0.20;
+  function collectRestartPrevStarts(text: string): number[] {
+    const starts = new Set<number>();
+    const minIndex = Math.max(0, text.length - OVERLAP_RESTART_MAX_DROP_RAW_CHARS);
+    starts.add(0);
+    for (let i = text.length - 1; i >= minIndex; i--) {
+      const char = text[i];
+      if (char === "。" || char === "！" || char === "？" || char === "\n") starts.add(i + 1);
+    }
+    return [...starts].filter((start) => start >= minIndex && start < text.length).sort((a, b) => b - a).slice(0, 8);
   }
 
-  function segmentQuality(text: string): number {
-    const normalizedLength = Math.min(normalizeForOverlap(text).chars.length, 220);
-    const hasSentenceEnd = RE_SENT_END.test(text.trim()) ? 12 : 0;
-    const replacementPenalty = (text.match(/[�□■◇◆]/g)?.length ?? 0) * 10;
-    const straySymbolPenalty = (text.match(/[|\\~^]{2,}/g)?.length ?? 0) * 8;
-    const naturalPatterns = [/できるような/g, /している/g, /されている/g, /られている/g, /ものである/g, /なのである/g, /については/g, /というのも/g, /すなわち/g, /であるから/g, /とするならば/g, /において/g, /に対して/g, /として/g, /一瞬で/g, /ではなく/g, /そうしたこと/g, /化学反応/g, /二次性質/g, /存在していた/g, /主張すること/g];
-    const brokenPatterns = [/[一-龯々]{1,4}な(視点|感覚|性質|関係|外部|内部|対象|もの)/g, /[がのをにへとでやりるか]{5,}/g, /[一-龯々]{1,4}心ではない/g, /次性質/g, /測定存能/g, /[一-龯々ぁ-んァ-ン]ー[ぁ-ん]/g, /[ァ-ンー]{3,}$/g, /そうした[でにをが]/g, /とか、[^。！？]{0,4}こと/g, /[ぁ-んァ-ン一-龯々]{2,8}$/g, /ずから/g, /がられている/g, /がりゆる/g, /与えるみ$/g];
-    const naturalBonus = naturalPatterns.reduce((sum, p) => sum + ((text.match(p)?.length ?? 0) * 12), 0);
-    const brokenPenalty = brokenPatterns.reduce((sum, p) => sum + ((text.match(p)?.length ?? 0) * 18), 0);
-    const danglingPenalty = RE_SENT_END.test(text.trim()) ? 0 : 10;
-    return normalizedLength + hasSentenceEnd + naturalBonus - replacementPenalty - straySymbolPenalty - brokenPenalty - danglingPenalty;
+  function scoreRestartSwitchPoint(prevOverlap: string, currOverlap: string, prevRawStart: number): OverlapSwitchPoint | null {
+    const prevDrop = prevOverlap.slice(prevRawStart).trim();
+    if (!prevDrop || prevDrop.length > OVERLAP_RESTART_MAX_DROP_RAW_CHARS) return null;
+
+    const currHead = currOverlap.slice(0, Math.min(currOverlap.length, prevDrop.length + OVERLAP_RESTART_HEAD_EXTRA_RAW_CHARS));
+    const prevNorm = normalizeForOverlap(prevDrop);
+    const currNorm = normalizeForOverlap(currHead);
+    if (prevNorm.chars.length < OVERLAP_RESTART_MIN_NORM_CHARS || currNorm.chars.length < OVERLAP_RESTART_MIN_NORM_CHARS) return null;
+
+    const prevChars = prevNorm.chars.slice(0, 240);
+    const currChars = currNorm.chars.slice(0, 280);
+    const dice3 = ngramDice(prevChars, currChars, 3);
+    const dice4 = ngramDice(prevChars, currChars, 4);
+    const common = commonSubsequenceLength(prevChars, currChars);
+    const shortCoverage = common / Math.min(prevChars.length, currChars.length);
+    const longCoverage = common / Math.max(prevChars.length, currChars.length);
+    const noise = suspiciousOcrScore(prevDrop);
+    const sharedScore = Math.max(dice3, dice4);
+
+    if (noise < 0.22 && sharedScore < 0.18 && shortCoverage < 0.36) return null;
+
+    const dropLengthPenalty = Math.min(prevNorm.chars.length / 260, 1) * 0.06;
+    const score = sharedScore * 0.34 + shortCoverage * 0.36 + longCoverage * 0.15 + noise * 0.34 - dropLengthPenalty;
+    if (score < OVERLAP_RESTART_MIN_SCORE) return null;
+
+    return { prevRawStart, currRawStart: 0, score, kind: "restart" };
   }
 
-  function longestCommonSuffixPrefix(prefixText: string, fullText: string): { length: number; completeEnd: number } {
-    let best = { length: 0, completeEnd: -1 };
-    for (let end = 1; end <= fullText.length; end++) {
-      const maxLen = Math.min(prefixText.length, end);
-      for (let len = maxLen; len >= 1; len--) {
-        if (prefixText.slice(prefixText.length - len) === fullText.slice(end - len, end)) {
-          if (len > best.length) best = { length: len, completeEnd: end };
-          break;
-        }
+  function findRestartSwitchPoint(prevOverlap: string, currOverlap: string): OverlapSwitchPoint | null {
+    let best: OverlapSwitchPoint | null = null;
+    for (const prevRawStart of collectRestartPrevStarts(prevOverlap)) {
+      const candidate = scoreRestartSwitchPoint(prevOverlap, currOverlap, prevRawStart);
+      if (!candidate) continue;
+      if (!best || candidate.score > best.score || (candidate.score === best.score && candidate.prevRawStart > best.prevRawStart)) {
+        best = candidate;
       }
     }
     return best;
   }
 
-  function completeDanglingSegment(a: string, b: string): string | null {
-    const aTrim = a.trim();
-    const bTrim = b.trim();
-    if (!aTrim || !bTrim) return null;
-    const aComplete = RE_SENT_END.test(aTrim);
-    const bComplete = RE_SENT_END.test(bTrim);
-    if (aComplete === bComplete) return null;
-    const dangling = aComplete ? bTrim : aTrim;
-    const complete = aComplete ? aTrim : bTrim;
-    if (normalizeForOverlap(dangling).chars.length < 40) return null;
-    if (overlapSimilarity(dangling, complete) < 0.72) return null;
-    const dNorm = normalizeForOverlap(dangling);
-    const cNorm = normalizeForOverlap(complete);
-    const common = commonSubsequenceLength(dNorm.chars, cNorm.chars);
-    if (common / Math.max(dNorm.chars.length, 1) < 0.88) return null;
-    const danglingTail = dangling.slice(Math.max(0, dangling.length - 24));
-    const completeTailWindow = complete.slice(Math.max(0, complete.length - 80));
-    const anchor = longestCommonSuffixPrefix(danglingTail, completeTailWindow);
-    if (anchor.length < 2) return null;
-    const append = completeTailWindow.slice(anchor.completeEnd);
-    if (append.length === 0 || append.length > 12) return null;
-    if (!RE_SENT_END.test((dangling + append).trim())) return null;
-    return (dangling + append).trim();
+  function findOverlapSwitchPoint(prevOverlap: string, currOverlap: string): OverlapSwitchPoint | null {
+    const anchor = findCommonOverlapAnchor(prevOverlap, currOverlap);
+    if (anchor) {
+      return { prevRawStart: anchor.prevRawStart, currRawStart: anchor.currRawStart, score: 1 + anchor.normLength / 1000, kind: "anchor" };
+    }
+    return findRestartSwitchPoint(prevOverlap, currOverlap);
   }
 
-  function chooseBetterOverlapSegment(prevSegment: string, currSegment: string): string {
-    const completed = completeDanglingSegment(prevSegment, currSegment);
-    if (completed) return completed;
-    // 両方とも文末で切れてる断片の場合、片方が他方を完全に含むなら長い方を採用
-    // （ページ境界で同じ内容が片方は短く片方は長く OCR された場合、長い方がより多くの本文を保持しているはず）
-    const prevTrim = prevSegment.trim();
-    const currTrim = currSegment.trim();
-    const prevIncomplete = !RE_SENT_END.test(prevTrim);
-    const currIncomplete = !RE_SENT_END.test(currTrim);
-    if (prevIncomplete && currIncomplete) {
-      if (currTrim.length > prevTrim.length && currTrim.startsWith(prevTrim)) return currTrim;
-      if (prevTrim.length > currTrim.length && prevTrim.startsWith(currTrim)) return prevTrim;
+  function processOverlap(prevOverlap: string, currOverlap: string): { newPrevOverlap: string; newCurrOverlap: string; currCutRawEnd: number; found: boolean; kind: OverlapSwitchPoint["kind"] | null } {
+    const switchPoint = findOverlapSwitchPoint(prevOverlap, currOverlap);
+    if (!switchPoint) {
+      return { newPrevOverlap: prevOverlap, newCurrOverlap: currOverlap, currCutRawEnd: 0, found: false, kind: null };
     }
-    const prevScore = segmentQuality(prevSegment);
-    const currScore = segmentQuality(currSegment);
-    if (prevScore >= currScore * 0.92 && prevScore <= currScore * 1.08) {
-      return prevSegment.length >= currSegment.length ? prevSegment : currSegment;
-    }
-    return prevScore > currScore ? prevSegment : currSegment;
-  }
 
-  // 戻り値:
-  //   merged   = prev に書き戻すマージ済みテキスト（既存の役割）
-  //   currKept = curr に残すべき文（prevとマッチせず curr 由来と判定された文の連結）
-  // 重なりの中身を1文ごとに処理する。
-  //   両方にあって prev が綺麗 → 次ページからその1文を削除（前ページはそのまま）
-  //   両方にあって curr が綺麗 → 前ページからその1文を削除（次ページはそのまま）
-  //   次ページにしか無い      → 両方そのまま（次ページの本物）
-  // 戻り値:
-  //   newPrevOverlap = 前ページに書き戻す（汚い文を抜いた／綺麗版で置換した）テキスト
-  //   newCurrOverlap = 次ページに残す（汚い文を抜いた）テキスト
-  function processOverlap(prevOverlap: string, currOverlap: string): { newPrevOverlap: string; newCurrOverlap: string } {
-    const prevSegments = splitToSentences(prevOverlap);
-    const currSegments = splitToSentences(currOverlap);
-    if (prevSegments.length === 0 || currSegments.length === 0) {
-      return { newPrevOverlap: prevOverlap, newCurrOverlap: currOverlap };
-    }
-    const prevReplace = new Map<number, string | null>();  // null=削除, string=置換
-    const currDelete = new Set<number>();
-    let prevIndex = 0;
-    let lastMatchedPrevIdx = -1;
-    let firstMatchedCurrIdx = -1;
-    for (let j = 0; j < currSegments.length; j++) {
-      const currSeg = currSegments[j];
-      let bestIndex = -1;
-      let bestScore = 0;
-      const searchEnd = Math.min(prevSegments.length, prevIndex + 7);
-      for (let i = prevIndex; i < searchEnd; i++) {
-        const score = overlapSimilarity(prevSegments[i], currSeg);
-        if (score > bestScore) { bestScore = score; bestIndex = i; }
-      }
-      if (bestIndex < 0 || bestScore < 0.38) continue;
-      const prevSeg = prevSegments[bestIndex];
-      const winner = chooseBetterOverlapSegment(prevSeg, currSeg);
-      if (winner === prevSeg) {
-        currDelete.add(j);
-      } else if (winner === currSeg) {
-        prevReplace.set(bestIndex, null);
-      } else {
-        prevReplace.set(bestIndex, winner);
-        currDelete.add(j);
-      }
-      prevIndex = bestIndex + 1;
-      lastMatchedPrevIdx = bestIndex;
-      if (firstMatchedCurrIdx === -1) firstMatchedCurrIdx = j;
-    }
-    // 前ページ：最後にマッチした文より「後ろ」にあるマッチしてない文は誤爆 → 削除
-    for (let i = lastMatchedPrevIdx + 1; i < prevSegments.length; i++) {
-      if (!prevReplace.has(i)) prevReplace.set(i, null);
-    }
-    // 次ページ：最初にマッチした文より「前」にあるマッチしてない文は誤爆 → 削除
-    if (firstMatchedCurrIdx > 0) {
-      for (let j = 0; j < firstMatchedCurrIdx; j++) {
-        if (!currDelete.has(j)) currDelete.add(j);
-      }
-    }
-    const newPrevOverlap = prevSegments.map((seg, i) => {
-      if (prevReplace.has(i)) {
-        const v = prevReplace.get(i);
-        return v === null ? "" : v;
-      }
-      return seg;
-    }).join("").trim();
-    const newCurrOverlap = currSegments.map((seg, j) => currDelete.has(j) ? "" : seg).join("").trim();
-    return { newPrevOverlap, newCurrOverlap };
+    return {
+      // 前のページは、信用できる切り替え点以降を落とす。
+      newPrevOverlap: prevOverlap.slice(0, switchPoint.prevRawStart).trim(),
+      // 後のページは、切り替え点より前に混じった脚注・崩れた重複だけ落とす。
+      newCurrOverlap: currOverlap.slice(switchPoint.currRawStart).trim(),
+      currCutRawEnd: switchPoint.currRawStart,
+      found: true,
+      kind: switchPoint.kind,
+    };
   }
 
   // 指定位置より前にある最後の文末記号(。！？\n)の直後を返す。
@@ -1139,7 +1089,19 @@ export default function Home() {
     const prevWindow = prevText.slice(prevWindowStart);
     const currWindow = currText.slice(0, OVERLAP_CURR_LOOKAHEAD);
     const overlap = await findFuzzyPageOverlap(prevWindow, currWindow);
-    if (!overlap) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, mergedOverlap: "" };
+    if (!overlap) {
+      const processed = processOverlap(prevWindow, currWindow);
+      if (!processed.found || processed.kind !== "restart") return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, mergedOverlap: "" };
+
+      const keptText = processed.newCurrOverlap
+        ? joinAfterOverlap(processed.newCurrOverlap, currText.slice(currWindow.length))
+        : currText.slice(currWindow.length).trim();
+      const newPrevText = processed.newPrevOverlap !== prevWindow.trim()
+        ? (prevText.slice(0, prevWindowStart) + processed.newPrevOverlap).trim()
+        : null;
+      if (!newPrevText) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, mergedOverlap: "" };
+      return { text: keptText, removed: true, removedPre: "", lcsText: "", newPrevText, mergedOverlap: processed.newPrevOverlap };
+    }
     // 原則：重なりがあるなら、その周辺の独立断片もまとめて削除
     //   curr 側：先頭 〜 重なり終端 までをすべて削除（重なり前の独立断片も映り込みとみなす）
     //   prev 側：重なり開始以降を mergedOverlap で上書き（重なり後の独立断片も映り込みとみなす）
@@ -1147,9 +1109,10 @@ export default function Home() {
     const prevSentenceStart = findSentenceBoundaryBefore(prevWindow, overlap.prevRawStart);
     const expandedPrevOverlap = prevWindow.slice(prevSentenceStart);
     const currOverlap = currText.slice(overlap.currRawStart, overlap.currRawEnd);
-    const removedPre = currText.slice(0, overlap.currRawStart);
-    // 重なりの中身を1文ごとに処理：汚い方の文だけ消す
-    const { newPrevOverlap, newCurrOverlap } = processOverlap(expandedPrevOverlap, currOverlap);
+    const processed = processOverlap(expandedPrevOverlap, currOverlap);
+    if (!processed.found) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, mergedOverlap: "" };
+    const { newPrevOverlap, newCurrOverlap } = processed;
+    const removedPre = currText.slice(0, overlap.currRawStart + processed.currCutRawEnd);
     // 次ページ：「重なりのまえ」(removedPre) を削除、「重なりの中」を newCurrOverlap に置換、「重なりのあと」はそのまま
     const keptText = newCurrOverlap
       ? joinAfterOverlap(newCurrOverlap, currText.slice(overlap.currRawEnd))
@@ -1159,7 +1122,7 @@ export default function Home() {
     if (newPrevOverlap !== expandedPrevOverlap.trim()) {
       newPrevText = (prevText.slice(0, prevWindowStart + prevSentenceStart) + newPrevOverlap).trim();
     }
-    return { text: keptText, removed: true, removedPre, lcsText: currOverlap, newPrevText, mergedOverlap: newPrevOverlap };
+    return { text: keptText, removed: true, removedPre, lcsText: "", newPrevText, mergedOverlap: newPrevOverlap };
   }
 
   async function handleCleanBleedThrough() {
