@@ -656,7 +656,7 @@ export default function Home() {
   const undoPopupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 除去/復元結果モード
-  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; lcsText: string; charDelta: number; isPrevUpdate?: boolean };
+  type BleedDiff = { pageId: string; pageNumber: number; removedText: string; removedPre: string; removedPost: string; lcsText: string; charDelta: number; isPrevUpdate?: boolean };
   type BleedResultState = { type: "clean" | "undo" | "redo"; diffs: BleedDiff[]; chapterId: string } | null;
   const [bleedResultState, setBleedResultState] = useState<BleedResultState>(null);
 
@@ -695,6 +695,7 @@ export default function Home() {
           pageNumber: pages.find((p) => p.id === b.pageId)?.pageNumber ?? 0,
           removedText: b.text,
           removedPre: "",
+          removedPost: "",
           lcsText: "",
           charDelta: b.text.length - (a?.text.length ?? 0),
           isPrevUpdate: b.isPrevUpdate,
@@ -727,6 +728,7 @@ export default function Home() {
           pageNumber: pages.find((p) => p.id === b.pageId)?.pageNumber ?? 0,
           removedText: b.text,
           removedPre: "",
+          removedPost: "",
           lcsText: "",
           charDelta: b.text.length - (a?.text.length ?? 0),
           isPrevUpdate: b.isPrevUpdate,
@@ -750,6 +752,17 @@ export default function Home() {
       setUndoPopup(true);
       undoPopupTimerRef.current = setTimeout(() => setUndoPopup(false), 4000);
     }
+  }
+
+  function removedTailBeforeUpdate(beforeText: string, afterText: string): string {
+    if (beforeText.startsWith(afterText)) return beforeText.slice(afterText.length);
+
+    let prefixLength = 0;
+    const maxLength = Math.min(beforeText.length, afterText.length);
+    while (prefixLength < maxLength && beforeText[prefixLength] === afterText[prefixLength]) {
+      prefixLength++;
+    }
+    return beforeText.slice(prefixLength);
   }
 
   type NormalizedText = { chars: string[]; rawStart: number[]; rawEnd: number[] };
@@ -1137,6 +1150,7 @@ export default function Home() {
     const beforeSnapMap = new Map<string, PageSnap>();
     const afterSnapMap = new Map<string, PageSnap>();
     const removedPres: Record<string, string> = {};
+    const removedPosts: Record<string, string> = {};
     const lcsTexts: Record<string, string> = {};
     const prevUpdateIds = new Set<string>();
 
@@ -1164,9 +1178,9 @@ export default function Home() {
               beforeSnapMap.set(prev.id, { pageId: prev.id, text: prevCurrent.text, bleedThroughCleaned: prevCurrent.bleedThroughCleaned, isPrevUpdate: true });
             }
             const updatedPrev = { ...prevCurrent, text: result.newPrevText, bleedThroughCleaned: true };
+            removedPosts[prev.id] = removedTailBeforeUpdate(prevCurrent.text, result.newPrevText);
             toUpdateMap.set(prev.id, updatedPrev);
             afterSnapMap.set(prev.id, { pageId: prev.id, text: result.newPrevText, bleedThroughCleaned: true, isPrevUpdate: true });
-            lcsTexts[prev.id] = result.mergedOverlap;
             prevUpdateIds.add(prev.id);
           }
         }
@@ -1207,6 +1221,7 @@ export default function Home() {
           pageNumber: pages.find((p) => p.id === b.pageId)?.pageNumber ?? 0,
           removedText: b.text,
           removedPre: removedPres[b.pageId] ?? "",
+          removedPost: removedPosts[b.pageId] ?? "",
           lcsText: lcsTexts[b.pageId] ?? "",
           charDelta: afterSnap[i].text.length - b.text.length,
           isPrevUpdate: prevUpdateIds.has(b.pageId),
@@ -1436,7 +1451,7 @@ export default function Home() {
                 <button onClick={() => setBleedResultState(null)} className="text-gray-400 hover:text-gray-600 text-sm leading-none">✕</button>
               </div>
               <p className="text-xs text-gray-500 mb-2">
-                {editChapter?.name} の {bleedResultState.diffs.filter(d => !d.isPrevUpdate).length}ページ
+                {editChapter?.name} の {bleedResultState.diffs.length}ページ
                 {bleedResultState.type === "undo" ? "を復元" : bleedResultState.type === "redo" ? "を再除去" : "に映り込みを検出・除去"}
               </p>
               {bleedResultState.type === "clean" && hasBleedPendingConfirm && (
@@ -1461,24 +1476,29 @@ export default function Home() {
               )}
             </div>
             <div className="flex-1 overflow-y-auto p-1.5">
-              {bleedResultState.diffs.filter(d => !d.isPrevUpdate).length === 0 ? (
+              {bleedResultState.diffs.length === 0 ? (
                 <p className="text-xs text-gray-400 text-center mt-8">変更されたページはありません</p>
               ) : (
-                bleedResultState.diffs.filter(d => !d.isPrevUpdate).map((diff) => (
-                  <div
-                    key={diff.pageId}
-                    onClick={() => { setSelectedPageId(diff.pageId); setMobilePanel("text"); setShowSidebar(false); }}
-                    className={`px-2 py-2 rounded-xl cursor-pointer mb-0.5 ${diff.pageId === selectedPageId ? "bg-blue-50 border-l-2 border-blue-500" : "hover:bg-gray-50"}`}
-                  >
-                    <p className="text-xs font-semibold text-blue-600 mb-1">ページ {diff.pageNumber}</p>
-                    <p className="text-[11px] leading-relaxed line-clamp-2" style={{ color: '#2563eb', textDecoration: 'line-through' }}>
-                      {diff.removedText.slice(0, 60)}…
-                    </p>
-                    <p className="text-[10px] mt-1" style={{ color: '#2563eb' }}>
-                      {`${diff.charDelta > 0 ? "+" : ""}${diff.charDelta}文字 ${bleedResultState.type === "undo" ? "復元" : "除去"}`}
-                    </p>
-                  </div>
-                ))
+                bleedResultState.diffs.map((diff) => {
+                  const previewText = diff.isPrevUpdate
+                    ? (diff.removedPost || diff.removedText)
+                    : (diff.removedPre || diff.lcsText || diff.removedText);
+                  return (
+                    <div
+                      key={diff.pageId}
+                      onClick={() => { setSelectedPageId(diff.pageId); setMobilePanel("text"); setShowSidebar(false); }}
+                      className={`px-2 py-2 rounded-xl cursor-pointer mb-0.5 ${diff.pageId === selectedPageId ? "bg-blue-50 border-l-2 border-blue-500" : "hover:bg-gray-50"}`}
+                    >
+                      <p className="text-xs font-semibold text-blue-600 mb-1">ページ {diff.pageNumber}</p>
+                      <p className="text-[11px] leading-relaxed line-clamp-2" style={{ color: '#2563eb', textDecoration: 'line-through' }}>
+                        {previewText.slice(0, 60)}…
+                      </p>
+                      <p className="text-[10px] mt-1" style={{ color: '#2563eb' }}>
+                        {`${diff.charDelta > 0 ? "+" : ""}${diff.charDelta}文字 ${bleedResultState.type === "undo" ? "復元" : "除去"}`}
+                      </p>
+                    </div>
+                  );
+                })
               )}
             </div>
           </>
@@ -2171,9 +2191,16 @@ export default function Home() {
                         const mainText = chapterSearchActive && chapterSearch.trim()
                           ? renderHighlighted(baseText, chapterSearch, chapterSearchMatchIdx, chapterSearchData?.pageMatches.find((m) => m.pageId === selectedPage.id)?.startIdx ?? 0)
                           : baseText;
-                        if (!bleedDiff || bleedDiff.isPrevUpdate || (!bleedDiff.removedPre && !bleedDiff.lcsText)) {
-                          // prev更新側は青ハイライトしない（削除側のみ表示）
+                        if (!bleedDiff || (!bleedDiff.removedPre && !bleedDiff.removedPost && !bleedDiff.lcsText)) {
                           return <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">{mainText}</p>;
+                        }
+                        if (bleedDiff.isPrevUpdate) {
+                          return (
+                            <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
+                              {mainText}
+                              {bleedDiff.removedPost && <span style={{ color: '#2563eb' }}>{bleedDiff.removedPost}</span>}
+                            </p>
+                          );
                         }
                         return (
                           <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
