@@ -106,6 +106,7 @@ export default function Home() {
   const selectedBook = books.find((b) => b.id === selectedBookId) ?? null;
   const editChapter = selectedBook?.chapters.find((c) => c.id === editChapterId) ?? null;
   const selectedPage = editChapter?.pages.find((p) => p.id === selectedPageId) ?? null;
+  const BLEED_PENDING_CONFIRM_KEY = "bleed_pending_confirm";
 
   // Keep refs up-to-date every render so global handlers never have stale closures
   chapterSearchActiveRef.current = chapterSearchActive;
@@ -131,29 +132,36 @@ export default function Home() {
   useEffect(() => {
     if (loading || autoRevertCheckedRef.current || books.length === 0) return;
     autoRevertCheckedRef.current = true;
-    const raw = localStorage.getItem("bleed_pending_confirm");
+    const raw = localStorage.getItem(BLEED_PENDING_CONFIRM_KEY);
     if (!raw) return;
     try {
-      const data: { phase: "pending" | "confirmed"; beforeSnap?: PageSnap[]; afterSnap: PageSnap[] } = JSON.parse(raw);
-      // pending → 除去前に戻す / confirmed → 除去後に戻す（↩ から復帰）
-      const snapToRevert = data.phase === "confirmed" ? data.afterSnap : (data.beforeSnap ?? []);
+      const pending = JSON.parse(raw) as PendingBleedConfirm;
+      if (pending.phase !== "pending") {
+        localStorage.removeItem(BLEED_PENDING_CONFIRM_KEY);
+        return;
+      }
+
+      const snapToRestore = pending.beforeSnap ?? [];
       const allPages = books.flatMap((b) => b.chapters.flatMap((c) => c.pages));
-      const toRevert = snapToRevert
+      const toRestore = snapToRestore
         .map((snap) => {
           const page = allPages.find((p) => p.id === snap.pageId);
           return page ? { ...page, text: snap.text, bleedThroughCleaned: snap.bleedThroughCleaned } : null;
         })
         .filter((p): p is Page => p !== null);
-      if (toRevert.length > 0) {
-        Promise.all(toRevert.map((p) => updatePage(p))).then(() => {
-          localStorage.removeItem("bleed_pending_confirm");
+
+      if (toRestore.length > 0) {
+        Promise.all(toRestore.map((p) => updatePage(p))).then(() => {
+          localStorage.removeItem(BLEED_PENDING_CONFIRM_KEY);
+          setHasBleedPendingConfirm(false);
+          setPendingBleedChapterId(null);
           reload();
         });
       } else {
-        localStorage.removeItem("bleed_pending_confirm");
+        localStorage.removeItem(BLEED_PENDING_CONFIRM_KEY);
       }
     } catch {
-      localStorage.removeItem("bleed_pending_confirm");
+      localStorage.removeItem(BLEED_PENDING_CONFIRM_KEY);
     }
   }, [loading, books]);
 
@@ -649,6 +657,7 @@ export default function Home() {
 
   // 章単位スナップショット履歴: chapterId → { snapshots: [{pageId, text, bleedThroughCleaned}][], index }
   type PageSnap = { pageId: string; text: string; bleedThroughCleaned: boolean; isPrevUpdate?: boolean };
+  type PendingBleedConfirm = { phase: "pending" | "confirmed"; chapterId?: string; beforeSnap?: PageSnap[]; afterSnap?: PageSnap[] };
   const chapterHistoryRef = useRef<Map<string, { snapshots: PageSnap[][]; index: number }>>(new Map());
 
   // undo/redoポップアップ（章全体対象）
@@ -662,7 +671,65 @@ export default function Home() {
 
   // localStorage に「確認待ち」が残っているかどうか
   const [hasBleedPendingConfirm, setHasBleedPendingConfirm] = useState(false);
+  const [pendingBleedChapterId, setPendingBleedChapterId] = useState<string | null>(null);
   const autoRevertCheckedRef = useRef(false);
+
+  function readPendingBleedConfirm(): PendingBleedConfirm | null {
+    const raw = localStorage.getItem(BLEED_PENDING_CONFIRM_KEY);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as PendingBleedConfirm;
+    } catch {
+      localStorage.removeItem(BLEED_PENDING_CONFIRM_KEY);
+      return null;
+    }
+  }
+
+  function mergeOriginalSnaps(base: PageSnap[], next: PageSnap[]): PageSnap[] {
+    const map = new Map<string, PageSnap>();
+    for (const snap of base) map.set(snap.pageId, snap);
+    for (const snap of next) {
+      if (!map.has(snap.pageId)) map.set(snap.pageId, snap);
+    }
+    return [...map.values()];
+  }
+
+  async function restorePendingBleedConfirm(): Promise<boolean> {
+    const pending = readPendingBleedConfirm();
+    if (!pending || pending.phase !== "pending") return false;
+    const snapToRestore = pending.beforeSnap ?? [];
+    const allPages = books.flatMap((b) => b.chapters.flatMap((c) => c.pages));
+    const toRestore = snapToRestore
+      .map((snap) => {
+        const page = allPages.find((p) => p.id === snap.pageId);
+        return page ? { ...page, text: snap.text, bleedThroughCleaned: snap.bleedThroughCleaned } : null;
+      })
+      .filter((p): p is Page => p !== null);
+
+    if (toRestore.length > 0) await Promise.all(toRestore.map((p) => updatePage(p)));
+    localStorage.removeItem(BLEED_PENDING_CONFIRM_KEY);
+    setHasBleedPendingConfirm(false);
+    setPendingBleedChapterId(null);
+    await reload();
+    return toRestore.length > 0;
+  }
+
+  function handleConfirmBleedThrough() {
+    localStorage.removeItem(BLEED_PENDING_CONFIRM_KEY);
+    setHasBleedPendingConfirm(false);
+    setPendingBleedChapterId(null);
+    setCleaningBleedResult("除去を確定しました");
+    setTimeout(() => setCleaningBleedResult(null), 3000);
+  }
+
+  function clearPendingBleedConfirmForChapter(chapterId: string) {
+    const pending = readPendingBleedConfirm();
+    if (pending?.phase === "pending" && pending.chapterId === chapterId) {
+      localStorage.removeItem(BLEED_PENDING_CONFIRM_KEY);
+      setHasBleedPendingConfirm(false);
+      setPendingBleedChapterId(null);
+    }
+  }
 
   function pushChapterHistory(chapterId: string, before: PageSnap[], after: PageSnap[]) {
     const map = chapterHistoryRef.current;
@@ -702,6 +769,7 @@ export default function Home() {
         };
       }).filter((d) => d.charDelta !== 0),
     });
+    clearPendingBleedConfirmForChapter(editChapterId);
   }
 
   async function handleRedo() {
@@ -1143,6 +1211,16 @@ export default function Home() {
     setCleaningBleed(true);
     setCleaningBleedResult(null);
 
+    const pendingBeforeClean = readPendingBleedConfirm();
+    if (pendingBeforeClean?.phase === "pending" && pendingBeforeClean.chapterId && pendingBeforeClean.chapterId !== editChapter.id) {
+      setCleaningBleedResult("未確定の除去を復元中…");
+      await restorePendingBleedConfirm();
+    }
+    const sameChapterPending = readPendingBleedConfirm();
+    const pendingBaseSnap = sameChapterPending?.phase === "pending" && sameChapterPending.chapterId === editChapter.id
+      ? sameChapterPending.beforeSnap ?? []
+      : [];
+
     const pages = [...editChapter.pages].sort((a, b) => a.pageNumber - b.pageNumber);
     const allCleaned = pages.every((p) => p.bleedThroughCleaned);
     let totalRemoved = 0;
@@ -1206,12 +1284,21 @@ export default function Home() {
     setCleaningBleedResult(null);
 
     if (beforeSnap.length > 0) {
+      const pendingOriginalSnap = mergeOriginalSnaps(pendingBaseSnap, beforeSnap);
+      try {
+        localStorage.setItem(BLEED_PENDING_CONFIRM_KEY, JSON.stringify({ phase: "pending", chapterId: editChapter.id, beforeSnap: pendingOriginalSnap }));
+      } catch {
+        setCleaningBleed(false);
+        setCleaningBleedResult("確認用バックアップを保存できませんでした");
+        setTimeout(() => setCleaningBleedResult(null), 5000);
+        return;
+      }
+
       // DB に即時書き込み（旧フロー）
       pushChapterHistory(editChapter.id, beforeSnap, afterSnap);
       await Promise.all(toUpdate.map((p) => updatePage(p)));
-      // 決定が押されるまで localStorage に保存 → 押されなければリロード時に原文へ自動復元
-      localStorage.setItem("bleed_pending_confirm", JSON.stringify({ phase: "pending", chapterId: editChapter.id, beforeSnap, afterSnap }));
       setHasBleedPendingConfirm(true);
+      setPendingBleedChapterId(editChapter.id);
       await reload();
       setBleedResultState({
         type: "clean",
@@ -1454,26 +1541,6 @@ export default function Home() {
                 {editChapter?.name} の {bleedResultState.diffs.length}ページ
                 {bleedResultState.type === "undo" ? "を復元" : bleedResultState.type === "redo" ? "を再除去" : "に映り込みを検出・除去"}
               </p>
-              {bleedResultState.type === "clean" && hasBleedPendingConfirm && (
-                <button
-                  onClick={() => {
-                    // pending → confirmed へ移行（↩ 後リロードで除去後状態に戻れるよう afterSnap を保持）
-                    const raw = localStorage.getItem("bleed_pending_confirm");
-                    if (raw) {
-                      try {
-                        const data = JSON.parse(raw);
-                        localStorage.setItem("bleed_pending_confirm", JSON.stringify({ phase: "confirmed", afterSnap: data.afterSnap }));
-                      } catch {
-                        localStorage.removeItem("bleed_pending_confirm");
-                      }
-                    }
-                    setHasBleedPendingConfirm(false);
-                  }}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg px-3 py-1.5 active:scale-95 transition-transform"
-                >
-                  決定
-                </button>
-              )}
             </div>
             <div className="flex-1 overflow-y-auto p-1.5">
               {bleedResultState.diffs.length === 0 ? (
@@ -1483,17 +1550,18 @@ export default function Home() {
                   const previewText = diff.isPrevUpdate
                     ? (diff.removedPost || diff.removedText)
                     : (diff.removedPre || diff.lcsText || diff.removedText);
+                  const resultColor = bleedResultState.type === "undo" ? "#ca8a04" : "#2563eb";
                   return (
                     <div
                       key={diff.pageId}
                       onClick={() => { setSelectedPageId(diff.pageId); setMobilePanel("text"); setShowSidebar(false); }}
                       className={`px-2 py-2 rounded-xl cursor-pointer mb-0.5 ${diff.pageId === selectedPageId ? "bg-blue-50 border-l-2 border-blue-500" : "hover:bg-gray-50"}`}
                     >
-                      <p className="text-xs font-semibold text-blue-600 mb-1">ページ {diff.pageNumber}</p>
-                      <p className="text-[11px] leading-relaxed line-clamp-2" style={{ color: '#2563eb', textDecoration: 'line-through' }}>
+                      <p className="text-xs font-semibold mb-1" style={{ color: resultColor }}>ページ {diff.pageNumber}</p>
+                      <p className="text-[11px] leading-relaxed line-clamp-2" style={{ color: resultColor, textDecoration: 'line-through' }}>
                         {previewText.slice(0, 60)}…
                       </p>
-                      <p className="text-[10px] mt-1" style={{ color: '#2563eb' }}>
+                      <p className="text-[10px] mt-1" style={{ color: resultColor }}>
                         {`${diff.charDelta > 0 ? "+" : ""}${diff.charDelta}文字 ${bleedResultState.type === "undo" ? "復元" : "除去"}`}
                       </p>
                     </div>
@@ -2116,9 +2184,16 @@ export default function Home() {
                       <button
                         onClick={() => handleUndoButtonClick()}
                         onDoubleClick={() => handleUndoButtonDoubleClick()}
-                        className="bg-blue-600 text-white text-xs font-bold px-2.5 py-1 active:scale-95 transition-transform"
+                        className={`bg-blue-600 text-white text-xs font-bold px-2.5 py-1 active:scale-95 transition-transform ${hasBleedPendingConfirm && pendingBleedChapterId === editChapterId ? "border-r border-blue-400" : ""}`}
                         title="除去を元に戻す（ダブルクリック: 進む）"
                       >↩</button>
+                      {hasBleedPendingConfirm && pendingBleedChapterId === editChapterId && (
+                        <button
+                          onClick={() => handleConfirmBleedThrough()}
+                          className="bg-emerald-600 text-white text-xs font-bold px-2.5 py-1 active:scale-95 transition-transform"
+                          title="この除去結果を確定"
+                        >確定</button>
+                      )}
                     </div>
                     {undoPopup && (
                       <div className="absolute top-full left-0 mt-1 z-50 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden whitespace-nowrap">
