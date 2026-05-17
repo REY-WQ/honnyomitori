@@ -15,6 +15,7 @@ import { compressImage } from "@/lib/compress";
 import { getSupabase } from "@/lib/supabase";
 
 type View = "text" | "edit";
+type UploadProgressPhase = "idle" | "upload" | "ocr";
 
 // OCRテキスト処理用の共通正規表現
 const RE_SENT_END     = /[。！？…」』）]$/;
@@ -39,8 +40,10 @@ export default function Home() {
 
   // Upload/processing state
   const [uploading, setUploading] = useState(false);
+  const [uploadProgressPhase, setUploadProgressPhase] = useState<UploadProgressPhase>("idle");
   const [processingTotal, setProcessingTotal] = useState(0);
   const [processingDone, setProcessingDone] = useState(0);
+  const [ocrProgressPageIds, setOcrProgressPageIds] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const retryFileInputRef = useRef<HTMLInputElement>(null);
   const retryPageRef = useRef<Page | null>(null);
@@ -107,6 +110,21 @@ export default function Home() {
   const editChapter = selectedBook?.chapters.find((c) => c.id === editChapterId) ?? null;
   const selectedPage = editChapter?.pages.find((p) => p.id === selectedPageId) ?? null;
   const BLEED_PENDING_CONFIRM_KEY = "bleed_pending_confirm";
+  const ocrProgressTotal = ocrProgressPageIds.length;
+  const ocrProgressDone = useMemo(() => {
+    if (ocrProgressPageIds.length === 0) return 0;
+    const ids = new Set(ocrProgressPageIds);
+    return books
+      .flatMap((b) => b.chapters.flatMap((c) => c.pages))
+      .filter((p) => ids.has(p.id) && (p.status === "done" || p.status === "error"))
+      .length;
+  }, [books, ocrProgressPageIds]);
+  const showingUploadProgress = uploadProgressPhase === "upload" && uploading;
+  const showingOcrProgress = uploadProgressPhase === "ocr" && ocrProgressTotal > 0 && ocrProgressDone < ocrProgressTotal;
+  const progressVisible = showingUploadProgress || showingOcrProgress;
+  const progressDone = showingUploadProgress ? processingDone : ocrProgressDone;
+  const progressTotal = showingUploadProgress ? processingTotal : ocrProgressTotal;
+  const progressPercent = progressTotal > 0 ? (progressDone / progressTotal) * 100 : 0;
 
   // Keep refs up-to-date every render so global handlers never have stale closures
   chapterSearchActiveRef.current = chapterSearchActive;
@@ -457,6 +475,8 @@ export default function Home() {
     const arr = Array.from(files).sort((a, b) => a.lastModified - b.lastModified);
     setProcessingTotal(arr.length);
     setProcessingDone(0);
+    setUploadProgressPhase("upload");
+    setOcrProgressPageIds([]);
     cancelUploadRef.current = false;
     setUploading(true);
 
@@ -505,11 +525,19 @@ export default function Home() {
     }
 
     // フェーズ2: アップロード完了分を一括でprocessingにしてEdge Function起動
-    await Promise.all(uploadedPages.map(({ page }) => updatePage({ ...page, status: "processing" })));
-    for (const { page, isFirstPage } of uploadedPages) {
-      supabase.functions.invoke("ocr-process", {
-        body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
-      }).catch(console.error);
+    if (uploadedPages.length > 0) {
+      setOcrProgressPageIds(uploadedPages.map(({ page }) => page.id));
+      setUploadProgressPhase("ocr");
+      setProcessingTotal(uploadedPages.length);
+      setProcessingDone(0);
+      await Promise.all(uploadedPages.map(({ page }) => updatePage({ ...page, status: "processing" })));
+      for (const { page, isFirstPage } of uploadedPages) {
+        supabase.functions.invoke("ocr-process", {
+          body: { pageId: page.id, bookId: selectedBookId, isFirstPage, removeBleedThrough },
+        }).catch(console.error);
+      }
+    } else {
+      setUploadProgressPhase("idle");
     }
 
     setUploading(false);
@@ -1861,20 +1889,24 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Upload progress */}
-              {uploading && (
-                <div className="bg-blue-50 border border-blue-200 rounded-xl px-3 py-2 mb-2">
+              {/* Upload/OCR progress */}
+              {progressVisible && (
+                <div className={`${showingUploadProgress ? "bg-green-50 border-green-200" : "bg-blue-50 border-blue-200"} border rounded-xl px-3 py-2 mb-2`}>
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs text-blue-600 font-medium">⟳ 処理中 {processingDone} / {processingTotal} 枚</span>
-                    <button
-                      onClick={handleCancelUpload}
-                      className="text-xs text-red-400 border border-red-200 bg-white rounded-lg px-2 py-0.5 active:scale-95 transition-transform"
-                    >中断</button>
+                    <span className={`text-xs font-medium ${showingUploadProgress ? "text-green-700" : "text-blue-600"}`}>
+                      {showingUploadProgress ? "写真アップロード中" : "OCR中"} {progressDone} / {progressTotal} 枚
+                    </span>
+                    {showingUploadProgress && (
+                      <button
+                        onClick={handleCancelUpload}
+                        className="text-xs text-red-400 border border-red-200 bg-white rounded-lg px-2 py-0.5 active:scale-95 transition-transform"
+                      >中断</button>
+                    )}
                   </div>
-                  <div className="bg-blue-100 rounded-full h-1.5">
+                  <div className={`${showingUploadProgress ? "bg-green-100" : "bg-blue-100"} rounded-full h-1.5`}>
                     <div
-                      className="bg-blue-600 h-1.5 rounded-full transition-all"
-                      style={{ width: `${processingTotal > 0 ? (processingDone / processingTotal) * 100 : 0}%` }}
+                      className={`${showingUploadProgress ? "bg-green-600" : "bg-blue-600"} h-1.5 rounded-full transition-all`}
+                      style={{ width: `${progressPercent}%` }}
                     />
                   </div>
                 </div>
