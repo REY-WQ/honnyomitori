@@ -880,6 +880,9 @@ export default function Home() {
   const OVERLAP_RESTART_HEAD_EXTRA_RAW_CHARS = 260;
   const OVERLAP_RESTART_MIN_NORM_CHARS = 12;
   const OVERLAP_RESTART_MIN_SCORE = 0.44;
+  const OVERLAP_SWITCH_POOL_LIMIT = 18;
+  const OVERLAP_PRESERVE_CHECK_NORM_CHARS = 240;
+  const OVERLAP_PRESERVE_OTHER_NORM_CHARS = 420;
   const IGNORED_OVERLAP_CHARS = new Set([
     ..."\u3000\u3001\u3002\uff0c\uff0e\u30fb\uff65\u300c\u300d\u300e\u300f\uff08\uff09()\uff3b\uff3d[]\u3010\u3011\u3008\u3009\u300a\u300b\u2026\u2025\u2014\u2015-\u2010\u2011\u2013_:\uff1a;\uff1b,.'\"`\u2018\u2019\u201c\u201d!?\uff01\uff1f",
   ]);
@@ -916,6 +919,60 @@ export default function Home() {
     return true;
   }
 
+  function poolOverlapAnchorCandidates(candidates: CommonOverlapAnchor[]): CommonOverlapAnchor[] {
+    const byKey = new Map<string, CommonOverlapAnchor>();
+    const add = (candidate: CommonOverlapAnchor) => {
+      byKey.set(`${candidate.prevRawStart}:${candidate.currRawStart}`, candidate);
+    };
+
+    [...candidates].sort((a, b) => b.normLength - a.normLength).slice(0, OVERLAP_SWITCH_POOL_LIMIT).forEach(add);
+    [...candidates].sort((a, b) => b.currRawStart - a.currRawStart || b.normLength - a.normLength).slice(0, 8).forEach(add);
+    [...candidates].sort((a, b) => a.currRawStart - b.currRawStart || b.normLength - a.normLength).slice(0, 8).forEach(add);
+    return [...byKey.values()];
+  }
+
+  function tailNormalizedChars(text: string, maxChars: number): string[] {
+    const chars = normalizeForOverlap(text).chars;
+    return chars.length > maxChars ? chars.slice(chars.length - maxChars) : chars;
+  }
+
+  function headNormalizedChars(text: string, maxChars: number): string[] {
+    const chars = normalizeForOverlap(text).chars;
+    return chars.length > maxChars ? chars.slice(0, maxChars) : chars;
+  }
+
+  function discardCoverage(discardText: string, otherText: string): number {
+    const discardChars = tailNormalizedChars(discardText, OVERLAP_PRESERVE_CHECK_NORM_CHARS);
+    if (discardChars.length === 0) return 1;
+    const otherChars = tailNormalizedChars(otherText, OVERLAP_PRESERVE_OTHER_NORM_CHARS);
+    if (otherChars.length === 0) return 0;
+    return commonSubsequenceLength(discardChars, otherChars) / discardChars.length;
+  }
+
+  function forwardDiscardCoverage(discardText: string, otherText: string): number {
+    const discardChars = headNormalizedChars(discardText, OVERLAP_PRESERVE_CHECK_NORM_CHARS);
+    if (discardChars.length === 0) return 1;
+    const otherChars = headNormalizedChars(otherText, OVERLAP_PRESERVE_OTHER_NORM_CHARS);
+    if (otherChars.length === 0) return 0;
+    return commonSubsequenceLength(discardChars, otherChars) / discardChars.length;
+  }
+
+  function discardLossRisk(discardText: string, otherText: string, direction: "backward" | "forward"): number {
+    const discardLength = normalizeForOverlap(discardText).chars.length;
+    if (discardLength < 36) return 0;
+
+    const coverage = direction === "backward"
+      ? discardCoverage(discardText, otherText)
+      : forwardDiscardCoverage(discardText, otherText);
+    if (coverage >= 0.82) return 0;
+
+    const noiseDiscount = Math.min(suspiciousOcrScore(discardText) * 0.18, 0.14);
+    const lengthPressure = Math.min(discardLength / 180, 1) * 0.16;
+    const coveragePenalty = Math.max(0, 0.82 - coverage) * 1.15;
+    const cliffPenalty = coverage < 0.68 && discardLength >= 70 ? 0.20 : 0;
+    return Math.max(0, coveragePenalty + lengthPressure + cliffPenalty - noiseDiscount);
+  }
+
   function findCommonOverlapAnchor(prevOverlap: string, currOverlap: string): CommonOverlapAnchor | null {
     const prevNorm = normalizeForOverlap(prevOverlap);
     const currNorm = normalizeForOverlap(currOverlap);
@@ -923,6 +980,7 @@ export default function Home() {
 
     let nextRow = new Array(currNorm.chars.length + 1).fill(0);
     let currRow = new Array(currNorm.chars.length + 1).fill(0);
+    const candidates: CommonOverlapAnchor[] = [];
     let earliestBest: CommonOverlapAnchor | null = null;
     let laterBest: CommonOverlapAnchor | null = null;
 
@@ -937,6 +995,7 @@ export default function Home() {
         if (!isOverlapAnchorBoundary(currOverlap, currRawStart)) continue;
 
         const candidate = { prevRawStart, currRawStart, normLength: currRow[j] };
+        candidates.push(candidate);
         if (
           !earliestBest ||
           candidate.currRawStart < earliestBest.currRawStart ||
@@ -963,7 +1022,42 @@ export default function Home() {
       currRow.fill(0);
     }
 
-    return laterBest ?? earliestBest;
+    const defaultAnchor = laterBest ?? earliestBest;
+    if (!defaultAnchor) return null;
+
+    const defaultCurrDrop = currOverlap.slice(0, defaultAnchor.currRawStart);
+    const defaultPrevKeep = prevOverlap.slice(0, defaultAnchor.prevRawStart);
+    const defaultCurrLossRisk = discardLossRisk(defaultCurrDrop, defaultPrevKeep, "backward");
+    if (defaultAnchor.currRawStart === 0 || defaultCurrLossRisk < 0.12) return defaultAnchor;
+
+    const pool = poolOverlapAnchorCandidates(candidates);
+    let safer: (CommonOverlapAnchor & { finalScore: number }) | null = null;
+    for (const candidate of pool) {
+      if (candidate.currRawStart >= defaultAnchor.currRawStart) continue;
+      const currDrop = currOverlap.slice(0, candidate.currRawStart);
+      const prevKeep = prevOverlap.slice(0, candidate.prevRawStart);
+      const prevDrop = prevOverlap.slice(candidate.prevRawStart);
+      const currKeep = currOverlap.slice(candidate.currRawStart);
+      const currLossRisk = discardLossRisk(currDrop, prevKeep, "backward");
+      if (currLossRisk > defaultCurrLossRisk - 0.08) continue;
+
+      const prevLossRisk = discardLossRisk(prevDrop, currKeep, "forward");
+      if (prevLossRisk > 0.46) continue;
+
+      const earlierBonus = Math.min((defaultAnchor.currRawStart - candidate.currRawStart) / 120, 1) * 0.12;
+      const lengthBonus = Math.min(candidate.normLength / 80, 1) * 0.06;
+      const finalScore = (defaultCurrLossRisk - currLossRisk) * 1.8 + earlierBonus + lengthBonus - prevLossRisk * 0.22;
+      if (
+        !safer ||
+        finalScore > safer.finalScore ||
+        (finalScore === safer.finalScore && candidate.currRawStart < safer.currRawStart) ||
+        (finalScore === safer.finalScore && candidate.currRawStart === safer.currRawStart && candidate.normLength > safer.normLength)
+      ) {
+        safer = { ...candidate, finalScore };
+      }
+    }
+
+    return safer ?? defaultAnchor;
   }
 
   function bigramCounts(chars: string[]): Map<string, number> {
@@ -1193,6 +1287,14 @@ export default function Home() {
     return 0;
   }
 
+  function findSoftBoundaryBefore(text: string, position: number): number {
+    const minIndex = Math.max(0, position - 80);
+    for (let i = position - 1; i >= minIndex; i--) {
+      if (/[。、，,.．:：;；!?！？\n]/.test(text[i])) return i + 1;
+    }
+    return position;
+  }
+
   async function removeBleedThroughHead(currText: string, prevText: string): Promise<{ text: string; removed: boolean; removedPre: string; lcsText: string; newPrevText: string | null; mergedOverlap: string }> {
     const prevWindowStart = Math.max(0, prevText.length - OVERLAP_PREV_LOOKBACK);
     const prevWindow = prevText.slice(prevWindowStart);
@@ -1217,11 +1319,12 @@ export default function Home() {
     // ただし prev 側のカット位置は文境界まで遡る（途中切断による残骸防止）
     const prevSentenceStart = findSentenceBoundaryBefore(prevWindow, overlap.prevRawStart);
     const expandedPrevOverlap = prevWindow.slice(prevSentenceStart);
-    const currOverlap = currText.slice(overlap.currRawStart, overlap.currRawEnd);
+    const currOverlapStart = findSoftBoundaryBefore(currText, overlap.currRawStart);
+    const currOverlap = currText.slice(currOverlapStart, overlap.currRawEnd);
     const processed = processOverlap(expandedPrevOverlap, currOverlap);
     if (!processed.found) return { text: currText, removed: false, removedPre: "", lcsText: "", newPrevText: null, mergedOverlap: "" };
     const { newPrevOverlap, newCurrOverlap } = processed;
-    const removedPre = currText.slice(0, overlap.currRawStart + processed.currCutRawEnd);
+    const removedPre = currText.slice(0, currOverlapStart + processed.currCutRawEnd);
     // 次ページ：「重なりのまえ」(removedPre) を削除、「重なりの中」を newCurrOverlap に置換、「重なりのあと」はそのまま
     const keptText = newCurrOverlap
       ? joinAfterOverlap(newCurrOverlap, currText.slice(overlap.currRawEnd))
